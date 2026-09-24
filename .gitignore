@@ -1,6 +1,22 @@
 node_modules/
 dist/
+coverage/
+*.tsbuildinfo
+
+# Secrets and local env — keep *.example tracked
 .env
+.env.*
+!.env.example
+!**/.env.example
+
+# Keys and certificates
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_rsa.pub
+
 *.log
 .DS_Store
 
