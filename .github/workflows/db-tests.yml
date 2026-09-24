@@ -1,0 +1,49 @@
+name: Database tests
+
+on:
+  pull_request:
+  push:
+    branches: [main, loyiso/rcp-03-ci]
+
+jobs:
+  db-tests:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: rasibe
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d rasibe"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PGHOST: localhost
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      PGDATABASE: rasibe
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the PostgreSQL client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+
+      - name: Apply the schema and grant rasibe_app
+        working-directory: db
+        run: |
+          set -euo pipefail
+          for f in 01_schema.sql 02_security.sql 03_triggers.sql 04_seed.sql; do
+            echo "Applying $f"
+            psql -v ON_ERROR_STOP=1 -f "$f"
+          done
+          psql -v ON_ERROR_STOP=1 -c "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO rasibe_app; GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO rasibe_app; REVOKE UPDATE, DELETE ON audit_entry FROM rasibe_app;"
+
+      - name: Run database tests
+        working-directory: db
+        env:
+          PGOPTIONS: -c rasibe.tests_strict=on
+        run: psql -v ON_ERROR_STOP=1 -f tests.sql
