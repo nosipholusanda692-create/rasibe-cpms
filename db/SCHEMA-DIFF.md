@@ -7,7 +7,7 @@ Agreed with Nosipho: **`db/` is the schema the application runs.** The four file
 3. `03_triggers.sql` — state machines and financial invariants
 4. `04_seed.sql` — reference data and demonstration accounts
 
-Nothing in `db/` is deleted or replaced by the design-phase file. `design/database/schema.sql` in the `XADAD7112` folder is the historical planning schema. It is what `tests.sql` still targets until RCP-02. Do not apply it to the `rasibe` database.
+Nothing in `db/` is deleted or replaced by the design-phase file. `design/database/schema.sql` in the `XADAD7112` folder is the historical planning schema. Do not apply it to the `rasibe` database.
 
 ## Counts
 
@@ -49,10 +49,16 @@ Same 17-type count, not the same types.
 | No invoice line type | `invoice_line_type_enum`: `STANDARD`, `OVERTIME`, `CREDIT`, `ADJUSTMENT` |
 | `notification_event_enum` uses `CONTRACT_ENDING`, `INVOICE_OVERDUE`, `NEW_RESOURCE_REQUEST`, `CANDIDATE_SUBMITTED` | `TIMESHEET_OVERDUE`, `PLACEMENT_ENDING`, `REQUEST_RAISED`, `SUBMISSION_OUTCOME`, `ACCOUNT_CREATED`, `PASSWORD_RESET` |
 
-`timesheet_status_enum` and `invoice_status_enum` use the same labels. Member order differs; PostgreSQL enum order is not interchangeable, so RCP-02 must follow **`db/`**, not the design file.
+`timesheet_status_enum` and `invoice_status_enum` use the same labels. Member order differs; PostgreSQL enum order is not interchangeable, so the tests follow **`db/`**, not the design file.
 
-## What RCP-02 must not assume
+## Tests (RCP-02)
 
-- Tests that `CREATE` inside schema `rasibe`, or that expect `consultant_demographics`, will not pass against this database.
-- Tests for `user_session` and `login_attempt` do not exist yet. RCP-02 adds them (expiry, revocation, lockout counter).
-- `id_number`, `vetting_status` and `bank_account_ref` are still plaintext. Encryption is RCP-08, not this ticket.
+`db/tests.sql` is the suite for this schema. It runs 36 checks in one transaction and then rolls back, so the seed data stays. It covers consent before submission, overlapping full-time placements, rate approval before activation, timesheet rules, invoicing only from an approved week, the 60/30/14 `PLACEMENT_ENDING` templates, `rasibe_app` blocked from updating or deleting `audit_entry`, `user_session` expiry and revocation, and the `login_attempt` / `failed_logins` lockout shape.
+
+Run it with `PGOPTIONS=-c rasibe.tests_strict=on`. Without that setting, a failed check is only a notice and `psql` exits 0.
+
+The design-folder suite, including Luhn identity checks and `consultant_demographics`, targets objects that are not in this database. Do not run that file against `rasibe`.
+
+## Still plaintext
+
+`id_number`, `vetting_status` and `bank_account_ref` are not encrypted. That is RCP-08 (NFR-SEC-005), not this ticket.
