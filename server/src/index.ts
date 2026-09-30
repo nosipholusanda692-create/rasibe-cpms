@@ -7,6 +7,7 @@ import hpp from 'hpp';
 
 import { loadSession } from './middleware/auth.js';
 import { AppError, translateDbError } from './lib/errors.js';
+import { logServerError, newErrorId } from './lib/logging.js';
 import { pool } from './lib/db.js';
 
 import { authRouter } from './routes/auth.js';
@@ -67,12 +68,17 @@ export function createApp() {
 
   // Business rules live in the database, so a constraint or trigger refusal
   // arrives here and becomes a message the user can act on.
-  app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  app.use((err: any, req: express.Request, res: express.Response, _next: express.NextFunction) => {
     let e: AppError;
     if (err instanceof AppError) {
       e = err;
     } else if (err?.name === 'ZodError') {
       e = new AppError(400, 'Check the details you entered', 'bad_request', err.flatten?.().fieldErrors);
+    } else if (err?.type === 'entity.too.large') {
+      // The body limit is a rejection, not a fault: it must not become a 5xx.
+      e = new AppError(413, 'That request is too large.', 'payload_too_large');
+    } else if (err?.type === 'entity.parse.failed') {
+      e = new AppError(400, 'The request body is not valid JSON.', 'bad_request');
     } else if (err?.code && typeof err.code === 'string' && err.code.length === 5) {
       e = translateDbError(err);
     } else {
@@ -80,7 +86,12 @@ export function createApp() {
         process.env.NODE_ENV === 'production' ? undefined : err?.message);
     }
 
-    if (e.status >= 500) console.error('[error]', err);
+    if (e.status >= 500) {
+      const errorId = newErrorId();
+      logServerError(errorId, err, req.method, req.path);
+      res.status(e.status).json({ error: e.code, message: e.message, detail: e.detail, errorId });
+      return;
+    }
     res.status(e.status).json({ error: e.code, message: e.message, detail: e.detail });
   });
 

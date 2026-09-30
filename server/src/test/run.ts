@@ -485,6 +485,25 @@ async function main() {
     const noRoute = await admin.get('/nonexistent');
     check('an unknown endpoint returns 404', noRoute.status === 404);
 
+    // NFR-PRI-006: a rejected request must not be reported as a server fault,
+    // because a 5xx is what gets logged.
+    const tooLarge = await fetch(`${BASE}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'a@b.co.za', password: 'x', filler: 'x'.repeat(150_000) }),
+    });
+    const tooLargeBody = await tooLarge.json().catch(() => null);
+    check('a body above the limit returns 413, not 500', tooLarge.status === 413, tooLarge.status);
+    check('the oversized request is answered with a usable message',
+      typeof tooLargeBody?.message === 'string' && tooLargeBody.message.length > 0, tooLargeBody);
+
+    const malformed = await fetch(`${BASE}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{ not json',
+    });
+    check('a malformed body returns 400, not 500', malformed.status === 400, malformed.status);
+
     // -----------------------------------------------------------------
     section('Sign out');
     // -----------------------------------------------------------------
