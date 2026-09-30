@@ -1,0 +1,72 @@
+name: Server CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  server:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: rasibe
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d rasibe"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      - name: Install dependencies
+        working-directory: server
+        run: npm ci
+
+      - name: Type check
+        working-directory: server
+        run: npx tsc -p tsconfig.json --noEmit
+
+      - name: Install the PostgreSQL client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+
+      # The suite signs in, writes placements, timesheets and invoices, so it
+      # needs the schema, the seed accounts and the rasibe_app grants.
+      - name: Apply the schema and grant rasibe_app
+        working-directory: db
+        env:
+          PGHOST: localhost
+          PGUSER: postgres
+          PGPASSWORD: postgres
+          PGDATABASE: rasibe
+        run: |
+          set -euo pipefail
+          for f in 01_schema.sql 02_security.sql 03_triggers.sql 04_seed.sql; do
+            echo "Applying $f"
+            psql -v ON_ERROR_STOP=1 -f "$f"
+          done
+          psql -v ON_ERROR_STOP=1 -c "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO rasibe_app; GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO rasibe_app; REVOKE UPDATE, DELETE ON audit_entry FROM rasibe_app;"
+
+      - name: Run the server tests
+        working-directory: server
+        env:
+          PGHOST: localhost
+          PGPORT: 5432
+          PGDATABASE: rasibe
+          PGUSER: rasibe_app
+          PGPASSWORD: rasibe_app_pw
+          NODE_ENV: test
+        run: npm test
