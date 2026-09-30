@@ -20,7 +20,8 @@ rasibe/
 │   ├── 01_schema.sql       27 tables, 17 enumerated types, keys and constraints
 │   ├── 02_security.sql     database roles, row-level security, projection views
 │   ├── 03_triggers.sql     the five state machines and the financial invariants
-│   └── 04_seed.sql         reference data and a demonstration data set
+│   ├── 04_seed.sql         reference data and a demonstration data set
+│   └── SCHEMA-DIFF.md      why db/ is the live schema, and how it differs from design
 ├── server/                 Node, Express and TypeScript API
 │   └── src/
 │       ├── index.ts        application wiring and error translation
