@@ -1,0 +1,11 @@
+title = "rasibe-cpms"
+
+# Documented development fixtures only. Real .env files are gitignored
+# and must stay out of the repository.
+[allowlist]
+description = "Tracked example env and README demo accounts"
+paths = [
+  '''(^|/)server/\.env\.example$''',
+  '''(^|/)web/\.env\.example$''',
+  '''(^|/)README\.md$''',
+]

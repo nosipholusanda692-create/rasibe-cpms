@@ -2,6 +2,8 @@ import 'dotenv/config';
 import express from 'express';
 import cookieParser from 'cookie-parser';
 import cors from 'cors';
+import helmet from 'helmet';
+import hpp from 'hpp';
 
 import { loadSession } from './middleware/auth.js';
 import { AppError, translateDbError } from './lib/errors.js';
@@ -21,12 +23,19 @@ export function createApp() {
   const app = express();
 
   app.use(
+    helmet({
+      // JSON API may be on a different origin from the client (CORS_ORIGIN).
+      crossOriginResourcePolicy: { policy: 'cross-origin' },
+    }),
+  );
+  app.use(
     cors({
       origin: process.env.CORS_ORIGIN ?? 'http://localhost:5173',
       credentials: true,
     }),
   );
-  app.use(express.json({ limit: '2mb' }));
+  app.use(express.json({ limit: '100kb' }));
+  app.use(hpp());
   app.use(cookieParser());
   app.use(loadSession);
 
