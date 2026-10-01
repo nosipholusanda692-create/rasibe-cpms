@@ -1,7 +1,32 @@
 import pg from 'pg';
+import { readFileSync } from 'node:fs';
 import 'dotenv/config';
 
 const { Pool } = pg;
+
+/**
+ * NFR-SEC-001 on the second hop: the connection between this process and the
+ * database carries every rate and identity value in the system.
+ *
+ * Off unless asked for, so local development and CI are unchanged: there the
+ * database is on the same host or inside the same runner network. A hosted
+ * database needs at least `require`, which encrypts but does not prove who
+ * answered. `verify-ca` and `verify-full` also check the chain, which needs
+ * PGSSLROOTCERT unless the authority is already trusted by the system.
+ *
+ * An unrecognised mode is treated as the stricter one. A typo should fail
+ * loudly rather than quietly leave the connection unverified.
+ */
+function sslSetting(): false | { rejectUnauthorized: boolean; ca?: string } {
+  const mode = process.env.PGSSLMODE;
+  if (!mode || mode === 'disable') return false;
+
+  const rootCert = process.env.PGSSLROOTCERT;
+  return {
+    rejectUnauthorized: mode !== 'require',
+    ca: rootCert ? readFileSync(rootCert, 'utf8') : undefined,
+  };
+}
 
 // numeric / int8 come back as strings by default; the money and hour columns
 // in this system are all within safe range, so parse them as numbers.
@@ -14,6 +39,7 @@ export const pool = new Pool({
   database: process.env.PGDATABASE ?? 'rasibe',
   user: process.env.PGUSER ?? 'rasibe_app',
   password: process.env.PGPASSWORD ?? 'rasibe_app_pw',
+  ssl: sslSetting(),
   max: 10,
   idleTimeoutMillis: 30_000,
 });

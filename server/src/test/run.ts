@@ -505,6 +505,36 @@ async function main() {
     check('a malformed body returns 400, not 500', malformed.status === 400, malformed.status);
 
     // -----------------------------------------------------------------
+    section('Transport security (NFR-SEC-001)');
+    // -----------------------------------------------------------------
+    // The suite runs over plain HTTP, as CI does. What is asserted here is the
+    // configuration that protects a hosted deployment: the headers a browser
+    // acts on once it is reached over TLS, and the cookie attributes that no
+    // longer depend on NODE_ENV.
+    const health = await fetch(`${BASE}/health`, { redirect: 'manual' });
+    const hsts = health.headers.get('strict-transport-security') ?? '';
+    check('HSTS is sent', hsts.length > 0, hsts);
+    check('HSTS lasts a year and covers subdomains',
+      /max-age=31536000/.test(hsts) && /includeSubDomains/i.test(hsts), hsts);
+
+    // The redirect must stay inactive unless it is asked for, or this suite and
+    // every local client would be bounced to a port with nothing listening.
+    check('plain HTTP is served directly while FORCE_HTTPS is unset',
+      health.status === 200, health.status);
+
+    // Read the header directly: the client above keeps only the name and value.
+    const loginRaw = await fetch(`${BASE}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'christinah@rasibe.co.za', password: 'Password123!' }),
+    });
+    const sessionCookie = loginRaw.headers.get('set-cookie') ?? '';
+    check('the session cookie is Secure in every environment',
+      /;\s*Secure/i.test(sessionCookie), sessionCookie);
+    check('the session cookie is HttpOnly', /HttpOnly/i.test(sessionCookie), sessionCookie);
+    check('the session cookie is SameSite=Lax', /SameSite=Lax/i.test(sessionCookie), sessionCookie);
+
+    // -----------------------------------------------------------------
     section('Sign out');
     // -----------------------------------------------------------------
     await consultant.post('/auth/logout');

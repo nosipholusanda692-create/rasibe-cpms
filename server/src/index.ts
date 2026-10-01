@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import http from 'node:http';
 import express from 'express';
 import cookieParser from 'cookie-parser';
 import cors from 'cors';
@@ -8,6 +9,7 @@ import hpp from 'hpp';
 import { loadSession } from './middleware/auth.js';
 import { AppError, translateDbError } from './lib/errors.js';
 import { logServerError, newErrorId } from './lib/logging.js';
+import { createHttpsServer } from './lib/https.js';
 import { pool } from './lib/db.js';
 
 import { authRouter } from './routes/auth.js';
@@ -20,15 +22,52 @@ import { invoicesRouter, dashboardRouter, reportsRouter } from './routes/invoice
 import { notificationsRouter } from './routes/notifications.js';
 import { settingsRouter } from './routes/settings.js';
 
+/**
+ * Express accepts a hop count, a boolean, or a list of addresses.
+ *
+ * This is only applied when TRUST_PROXY says something is in front of us.
+ * Trusting the forwarded headers unconditionally would let any client choose
+ * the address recorded in login_attempt, which would defeat a per-address
+ * throttle and corrupt the sign-in record (FR-AUT-011).
+ */
+function trustProxySetting(raw: string): number | boolean | string {
+  if (/^\d+$/.test(raw)) return Number(raw);
+  if (raw === 'true') return true;
+  if (raw === 'false') return false;
+  return raw;
+}
+
 export function createApp() {
   const app = express();
+
+  const trustProxy = process.env.TRUST_PROXY;
+  if (trustProxy) app.set('trust proxy', trustProxySetting(trustProxy));
 
   app.use(
     helmet({
       // JSON API may be on a different origin from the client (CORS_ORIGIN).
       crossOriginResourcePolicy: { policy: 'cross-origin' },
+      // NFR-SEC-001. A year is the floor browsers expect before they will
+      // honour a preload submission. A browser only acts on this over TLS, so
+      // it is inert rather than harmful in development. Preload itself is not
+      // claimed here: it is a commitment that is difficult to withdraw.
+      hsts: { maxAge: 31_536_000, includeSubDomains: true },
     }),
   );
+
+  // Only correct where HTTPS is actually reachable, so it is opt-in. It stays
+  // off in development and in CI, where the suite drives plain HTTP in-process.
+  // Behind a proxy, req.secure is the forwarded protocol, which is why this
+  // needs TRUST_PROXY to be set as well.
+  if (process.env.FORCE_HTTPS === 'true') {
+    app.use((req, res, next) => {
+      if (req.secure) return next();
+      // 308 rather than 302: the method and body survive, so a POST is not
+      // silently downgraded to a GET on the way to the secure URL.
+      res.redirect(308, `https://${req.headers.host}${req.originalUrl}`);
+    });
+  }
+
   app.use(
     cors({
       origin: process.env.CORS_ORIGIN ?? 'http://localhost:5173',
@@ -101,8 +140,17 @@ export function createApp() {
 const isDirectRun = process.argv[1]?.endsWith('index.ts') || process.argv[1]?.endsWith('index.js');
 if (isDirectRun) {
   const port = Number(process.env.PORT ?? 4000);
-  createApp().listen(port, () => {
-    console.log(`Rasibe CPMS API listening on http://localhost:${port}`);
-    console.log(`Health: http://localhost:${port}/api/health`);
+  const app = createApp();
+
+  // Serving TLS here covers a host that runs this process directly. Where a
+  // platform or reverse proxy terminates TLS instead, no certificate is
+  // configured and the edge does the encrypting.
+  const secure = createHttpsServer(app);
+  const server = secure ?? http.createServer(app);
+  const scheme = secure ? 'https' : 'http';
+
+  server.listen(port, () => {
+    console.log(`Rasibe CPMS API listening on ${scheme}://localhost:${port}`);
+    console.log(`Health: ${scheme}://localhost:${port}/api/health`);
   });
 }
