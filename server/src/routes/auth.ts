@@ -7,6 +7,24 @@ import { SESSION_COOKIE, requireAuth } from '../middleware/auth.js';
 
 export const authRouter = Router();
 
+/**
+ * NFR-SEC-001. Secure in every environment, not only production: a session
+ * identifier that travels in clear even once is already exposed, and the
+ * environment a server believes it is in is not something a user can verify.
+ * Development is unaffected because browsers treat localhost as a trustworthy
+ * origin and will still store the cookie.
+ *
+ * Sign-out reuses these attributes deliberately. A cookie is cleared by
+ * matching it, so options that drift between setting and clearing can leave
+ * the browser holding a session the server has already revoked.
+ */
+const SESSION_COOKIE_OPTIONS = {
+  httpOnly: true,
+  sameSite: 'lax',
+  secure: true,
+  path: '/',
+} as const;
+
 const MAX_FAILED = 5;
 const LOCK_MINUTES = 15;
 
@@ -93,9 +111,7 @@ authRouter.post('/login', async (req, res, next) => {
     await record(true);
 
     res.cookie(SESSION_COOKIE, sessions[0].session_id, {
-      httpOnly: true,
-      sameSite: 'lax',
-      secure: process.env.NODE_ENV === 'production',
+      ...SESSION_COOKIE_OPTIONS,
       maxAge: ttlHours * 3600_000,
     });
 
@@ -120,7 +136,7 @@ authRouter.post('/logout', async (req, res, next) => {
         req.sessionId,
       ]);
     }
-    res.clearCookie(SESSION_COOKIE);
+    res.clearCookie(SESSION_COOKIE, SESSION_COOKIE_OPTIONS);
     res.json({ ok: true });
   } catch (e) {
     next(e);
