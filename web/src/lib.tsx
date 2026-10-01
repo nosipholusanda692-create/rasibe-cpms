@@ -14,11 +14,19 @@ export class ApiError extends Error {
   }
 }
 
+// NFR-SEC-008. The server sets rasibe_csrf on reads and requires it back as a
+// header on writes. Another site can make the browser send our cookies, but it
+// cannot read them, so it cannot produce this header.
+function csrfHeader(): Record<string, string> {
+  const match = document.cookie.match(/(?:^|;\s*)rasibe_csrf=([^;]*)/);
+  return match ? { 'X-CSRF-Token': decodeURIComponent(match[1]) } : {};
+}
+
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(`/api${path}`, {
     method,
     credentials: 'include', // the session cookie is httpOnly, so it travels here
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...csrfHeader() },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
 

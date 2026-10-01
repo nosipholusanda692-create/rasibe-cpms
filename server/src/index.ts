@@ -10,6 +10,7 @@ import { loadSession } from './middleware/auth.js';
 import { AppError, translateDbError } from './lib/errors.js';
 import { logServerError, newErrorId } from './lib/logging.js';
 import { createHttpsServer } from './lib/https.js';
+import { csrf } from './lib/csrf.js';
 import { pool } from './lib/db.js';
 
 import { authRouter } from './routes/auth.js';
@@ -78,6 +79,8 @@ export function createApp() {
   app.use(hpp());
   app.use(cookieParser());
   app.use(loadSession);
+  // After loadSession: the token is bound to the session it resolves.
+  app.use(csrf);
 
   app.get('/api/health', async (_req, res) => {
     try {
