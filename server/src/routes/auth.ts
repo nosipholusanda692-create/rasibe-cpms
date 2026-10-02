@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { anonQuery, query, withActor } from '../lib/db.js';
 import { badRequest, unauthorised, AppError } from '../lib/errors.js';
 import { SESSION_COOKIE, requireAuth } from '../middleware/auth.js';
+import { CSRF_COOKIE, csrfCookieOptions, tokenFor } from '../lib/csrf.js';
 
 export const authRouter = Router();
 
@@ -95,6 +96,18 @@ authRouter.post('/login', async (req, res, next) => {
       throw unauthorised('Email address or password is incorrect');
     }
 
+    // NFR-SEC-010. Signing in is the one privilege change this system has, and
+    // an identifier issued before it must not survive it. Without this, an
+    // identifier planted in the browser beforehand stays valid alongside the
+    // new one until it expires on its own.
+    if (req.sessionId) {
+      await anonQuery(
+        `UPDATE user_session SET revoked_at = now()
+          WHERE session_id = $1 AND revoked_at IS NULL`,
+        [req.sessionId],
+      );
+    }
+
     const ttlHours = Number(process.env.SESSION_TTL_HOURS ?? 8);
     const sessions = await anonQuery<{ session_id: string }>(
       `INSERT INTO user_session (user_id, expires_at, ip_address)
@@ -114,6 +127,11 @@ authRouter.post('/login', async (req, res, next) => {
       ...SESSION_COOKIE_OPTIONS,
       maxAge: ttlHours * 3600_000,
     });
+
+    // The token is bound to the session, so a new session means a new token.
+    // Issued here rather than on the next read, so the client can write
+    // immediately after signing in.
+    res.cookie(CSRF_COOKIE, tokenFor(sessions[0].session_id), csrfCookieOptions);
 
     res.json({
       user: {
@@ -137,6 +155,11 @@ authRouter.post('/logout', async (req, res, next) => {
       ]);
     }
     res.clearCookie(SESSION_COOKIE, SESSION_COOKIE_OPTIONS);
+    // Replaced rather than cleared. The token just became wrong, because the
+    // session it was derived from is revoked, but the client stays on the page
+    // and signing in again is itself a write that needs a valid token. Clearing
+    // it would leave the next sign in with nothing to send.
+    res.cookie(CSRF_COOKIE, tokenFor(null), csrfCookieOptions);
     res.json({ ok: true });
   } catch (e) {
     next(e);

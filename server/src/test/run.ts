@@ -38,25 +38,52 @@ function section(title: string) {
 // ---------------------------------------------------------------------
 // A tiny cookie-aware client, so sessions behave as they do in a browser
 // ---------------------------------------------------------------------
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
 class Client {
-  cookie = '';
+  cookies = new Map<string, string>();
   constructor(public label: string) {}
 
   async request(method: string, path: string, body?: unknown) {
+    // A browser reads before it can write, and that read is how the CSRF token
+    // arrives. Doing the same here keeps a fresh client's first write honest
+    // rather than special-casing the token into existence.
+    if (!SAFE_METHODS.has(method) && !this.cookies.has('rasibe_csrf')) {
+      await this.request('GET', '/auth/me');
+    }
+
+    const csrf = this.cookies.get('rasibe_csrf');
     const res = await fetch(BASE + path, {
       method,
       headers: {
         'Content-Type': 'application/json',
-        ...(this.cookie ? { Cookie: this.cookie } : {}),
+        ...(this.cookies.size ? { Cookie: this.cookieHeader() } : {}),
+        ...(csrf ? { 'X-CSRF-Token': csrf } : {}),
       },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
-    const setCookie = res.headers.get('set-cookie');
-    if (setCookie) this.cookie = setCookie.split(';')[0];
+    this.absorb(res);
     const text = await res.text();
     let json: any = null;
     try { json = text ? JSON.parse(text) : null; } catch { json = text; }
     return { status: res.status, body: json };
+  }
+
+  private cookieHeader() {
+    return [...this.cookies].map(([name, value]) => `${name}=${value}`).join('; ');
+  }
+
+  /** getSetCookie keeps the headers separate; get() would join them into one. */
+  private absorb(res: Response) {
+    for (const line of res.headers.getSetCookie()) {
+      const pair = line.split(';')[0];
+      const eq = pair.indexOf('=');
+      const name = pair.slice(0, eq).trim();
+      const value = pair.slice(eq + 1);
+      // Clearing a cookie sends an empty value with a past expiry.
+      if (value === '') this.cookies.delete(name);
+      else this.cookies.set(name, value);
+    }
   }
 
   get = (p: string) => this.request('GET', p);
@@ -522,10 +549,15 @@ async function main() {
     check('plain HTTP is served directly while FORCE_HTTPS is unset',
       health.status === 200, health.status);
 
-    // Read the header directly: the client above keeps only the name and value.
+    // Read the Set-Cookie header directly, which the client above does not keep.
+    // The health read opened this section, so it also carries the CSRF token a
+    // write now has to present.
+    const anonToken = health.headers.getSetCookie()
+      .find((c) => c.startsWith('rasibe_csrf='))?.split(';')[0].split('=')[1] ?? '';
+
     const loginRaw = await fetch(`${BASE}/auth/login`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': anonToken },
       body: JSON.stringify({ email: 'christinah@rasibe.co.za', password: 'Password123!' }),
     });
     const sessionCookie = loginRaw.headers.get('set-cookie') ?? '';
@@ -535,11 +567,124 @@ async function main() {
     check('the session cookie is SameSite=Lax', /SameSite=Lax/i.test(sessionCookie), sessionCookie);
 
     // -----------------------------------------------------------------
+    section('Cross-site request forgery (NFR-SEC-008)');
+    // -----------------------------------------------------------------
+    // A read hands out the token. Everything below is a write attempted the way
+    // another site would have to attempt it: with our cookies, which a browser
+    // attaches automatically, but without the header, which it cannot read.
+    const readForToken = await fetch(`${BASE}/auth/me`);
+    const issuedToken = readForToken.headers.getSetCookie()
+      .find((c) => c.startsWith('rasibe_csrf='));
+    check('a read issues a CSRF token', issuedToken !== undefined, issuedToken);
+    check('the token cookie is readable by script, unlike the session',
+      issuedToken !== undefined && !/HttpOnly/i.test(issuedToken), issuedToken);
+
+    const sessionCookieValue = admin.cookies.get('rasibe_session') ?? '';
+    const adminToken = admin.cookies.get('rasibe_csrf') ?? '';
+
+    const forged = await fetch(`${BASE}/skills`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Cookie: `rasibe_session=${sessionCookieValue}`,
+      },
+      body: JSON.stringify({ name: 'Forged skill' }),
+    });
+    const refusal = await forged.json().catch(() => null);
+    // The administrator may create skills, so a 403 here can only be the token.
+    // Checking the code as well stops this passing for an authorisation reason.
+    check('a write without the token is refused',
+      forged.status === 403 && refusal?.error === 'csrf_failed', { status: forged.status, refusal });
+    check('the refusal carries a message the user can act on',
+      typeof refusal?.message === 'string' && refusal.message.length > 0, refusal);
+
+    // Cookie tossing: a hostile subdomain is same-site and can write a cookie on
+    // the parent domain, so it could set both halves to a value of its choosing.
+    // The server recomputes the expected token from the session and never reads
+    // the cookie back, so matching halves prove nothing.
+    const tossed = await fetch(`${BASE}/skills`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Cookie: `rasibe_session=${sessionCookieValue}; rasibe_csrf=chosen-by-the-attacker`,
+        'X-CSRF-Token': 'chosen-by-the-attacker',
+      },
+      body: JSON.stringify({ name: 'Tossed skill' }),
+    });
+    check('a token the attacker chose for both halves is refused',
+      tossed.status === 403, tossed.status);
+    check('the tossed cookie is rejected as a token failure, not something else',
+      (await tossed.json().catch(() => null))?.error === 'csrf_failed');
+
+    const foreignOrigin = await fetch(`${BASE}/skills`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Origin: 'https://not-rasibe.example',
+        Cookie: `rasibe_session=${sessionCookieValue}`,
+        'X-CSRF-Token': adminToken,
+      },
+      body: JSON.stringify({ name: 'Foreign skill' }),
+    });
+    check('a write from a foreign origin is refused even with a valid token',
+      foreignOrigin.status === 403, foreignOrigin.status);
+
+    const reads = await fetch(`${BASE}/consultants`, {
+      headers: { Cookie: `rasibe_session=${sessionCookieValue}` },
+    });
+    check('a read is not blocked by the absence of a token', reads.status === 200, reads.status);
+
+    // -----------------------------------------------------------------
+    section('Session rotation on a privilege change (NFR-SEC-010)');
+    // -----------------------------------------------------------------
+    const fixated = new Client('fixation');
+    await fixated.get('/auth/me');
+    await fixated.login('nosipho@rasibe.co.za');
+    const beforeSecond = fixated.cookies.get('rasibe_session') ?? '';
+    const tokenBefore = fixated.cookies.get('rasibe_csrf') ?? '';
+
+    await fixated.login('nosipho@rasibe.co.za');
+    const afterSecond = fixated.cookies.get('rasibe_session') ?? '';
+    check('signing in issues a new session identifier',
+      beforeSecond !== '' && afterSecond !== '' && beforeSecond !== afterSecond);
+    check('the CSRF token changes with the session',
+      tokenBefore !== (fixated.cookies.get('rasibe_csrf') ?? ''));
+
+    // The identifier held before signing in must be dead, not merely replaced.
+    const replayed = await fetch(`${BASE}/auth/me`, {
+      headers: { Cookie: `rasibe_session=${beforeSecond}` },
+    });
+    check('the session held before signing in is revoked, not just replaced',
+      replayed.status === 401, replayed.status);
+
+    // -----------------------------------------------------------------
     section('Sign out');
     // -----------------------------------------------------------------
     await consultant.post('/auth/logout');
     const afterLogout = await consultant.get('/timesheets/my/current');
     check('the session is revoked on sign out', afterLogout.status === 401);
+
+    // Signing out must leave a usable token behind. A browser stays on the page
+    // rather than reloading, so nothing else would fetch one, and signing in is
+    // itself a write. Clearing the cookie here passed every test above and
+    // still broke the sign in that follows.
+    const signOutClient = new Client('after sign out');
+    await signOutClient.login('thabo.m@example.co.za');
+    await signOutClient.post('/auth/logout');
+    const tokenAfterLogout = signOutClient.cookies.get('rasibe_csrf');
+    check('signing out leaves a token the next sign in can use',
+      tokenAfterLogout !== undefined && tokenAfterLogout.length > 0, tokenAfterLogout);
+
+    const signInAgain = await fetch(`${BASE}/auth/login`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-CSRF-Token': tokenAfterLogout ?? '',
+      },
+      body: JSON.stringify({ email: 'thabo.m@example.co.za', password: 'Password123!' }),
+    });
+    check('signing in straight after signing out is accepted',
+      signInAgain.status === 200, signInAgain.status);
   } finally {
     server.close();
     await closePool();
