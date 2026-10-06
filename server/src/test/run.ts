@@ -9,7 +9,7 @@
  * Run with:  npm test
  */
 import { createApp } from '../index.js';
-import { closePool, withActor, type Actor } from '../lib/db.js';
+import { anonQuery, closePool, withActor, type Actor } from '../lib/db.js';
 import type { Server } from 'node:http';
 
 const PORT = Number(process.env.TEST_PORT ?? 4100);
@@ -791,6 +791,94 @@ async function main() {
     });
     check('the identity number that was edited away can be used again',
       reuseOld.status === 201, reuseOld.status);
+
+    // -----------------------------------------------------------------
+    section('Sign-in timing (NFR-SEC-004)');
+    // -----------------------------------------------------------------
+    // Wording alone does not hide whether an account exists. Before this was
+    // fixed, a wrong password took 146 ms and an unknown address 12 ms on the
+    // same machine, with no overlap: one request per address was enough.
+    const SPARE = 'l.vanwyk@example.co.za';
+
+    const clearLock = (email: string) =>
+      anonQuery(
+        `UPDATE app_user SET failed_logins = 0, locked_until = NULL WHERE lower(email) = lower($1)`,
+        [email],
+      );
+
+    const timer = new Client('timing');
+    await timer.get('/auth/me'); // take the CSRF token now, outside anything timed
+
+    async function timeRefusal(email: string): Promise<number> {
+      // Without this the sixth attempt onwards takes the locked branch and the
+      // measurement quietly becomes an average of two different paths.
+      await clearLock(email);
+      const started = performance.now();
+      await timer.post('/auth/login', { email, password: 'DefinitelyNotThePassword!' });
+      return performance.now() - started;
+    }
+
+    async function medianRefusal(email: string, rounds = 11): Promise<number> {
+      await timeRefusal(email); // discard a warm-up
+      const samples: number[] = [];
+      for (let i = 0; i < rounds; i++) samples.push(await timeRefusal(email));
+      samples.sort((a, b) => a - b);
+      return samples[Math.floor(samples.length / 2)];
+    }
+
+    const knownMs = await medianRefusal(SPARE);
+    const unknownMs = await medianRefusal('nobody.at.all@example.co.za');
+
+    // Compared as a proportion rather than in milliseconds, so the check means
+    // the same thing on a slow shared runner as on a developer laptop: both
+    // paths scale with the cost of the hash, so their ratio does not.
+    const drift = Math.abs(knownMs - unknownMs) / Math.max(knownMs, unknownMs);
+    check('an unknown address is refused in the same time as a wrong password',
+      drift < 0.35, { knownMs: knownMs.toFixed(1), unknownMs: unknownMs.toFixed(1),
+                      drift: drift.toFixed(3) });
+    check('the refusal for an unknown address is not a fast path',
+      unknownMs > 20, unknownMs.toFixed(1));
+
+    const unknownRefusal = await timer.post('/auth/login', {
+      email: 'nobody.at.all@example.co.za', password: 'DefinitelyNotThePassword!',
+    });
+    await clearLock(SPARE);
+    const wrongRefusal = await timer.post('/auth/login', {
+      email: SPARE, password: 'DefinitelyNotThePassword!',
+    });
+    check('both refusals carry the same status',
+      unknownRefusal.status === 401 && wrongRefusal.status === 401,
+      [unknownRefusal.status, wrongRefusal.status]);
+    check('both refusals carry the same wording',
+      unknownRefusal.body?.message === wrongRefusal.body?.message,
+      [unknownRefusal.body?.message, wrongRefusal.body?.message]);
+    check('both refusals carry the same error code',
+      unknownRefusal.body?.error === wrongRefusal.body?.error,
+      [unknownRefusal.body?.error, wrongRefusal.body?.error]);
+
+    // A locked account skipped the password check too, so it answered faster
+    // than an unlocked one. That told an attacker which addresses they had
+    // already driven into lockout.
+    await clearLock(SPARE);
+    for (let i = 0; i < 5; i++) {
+      await timer.post('/auth/login', { email: SPARE, password: 'DefinitelyNotThePassword!' });
+    }
+    const lockedStarted = performance.now();
+    const locked = await timer.post('/auth/login', {
+      email: SPARE, password: 'DefinitelyNotThePassword!',
+    });
+    const lockedMs = performance.now() - lockedStarted;
+    check('five failures lock the account (FR-AUT-009)', locked.status === 423, locked.status);
+    // Measured against the path that genuinely verifies a password, not
+    // against the unknown-address path: if that one regressed to a fast path,
+    // comparing to it would let this check pass while both were broken.
+    check('a locked account is not refused faster than a password check',
+      lockedMs > knownMs * 0.6, { lockedMs: lockedMs.toFixed(1), knownMs: knownMs.toFixed(1) });
+
+    await clearLock(SPARE);
+    const afterUnlock = await timer.post('/auth/login', { email: SPARE, password: 'Password123!' });
+    check('the account signs in again once the lock is cleared',
+      afterUnlock.status === 200, afterUnlock.status);
   } finally {
     server.close();
     await closePool();
