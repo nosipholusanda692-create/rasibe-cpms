@@ -3,7 +3,7 @@ name: Secret scan
 on:
   pull_request:
   push:
-    branches: [main, loyiso/rcp-05-12-hygiene]
+    branches: [main]
 
 jobs:
   gitleaks:

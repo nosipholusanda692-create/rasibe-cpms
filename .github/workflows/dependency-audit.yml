@@ -1,0 +1,42 @@
+name: Dependency audit
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  audit:
+    name: Audit ${{ matrix.project }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      # Both projects are reported even when one of them fails, so a single
+      # finding in one does not hide the state of the other.
+      fail-fast: false
+      matrix:
+        project: [server, web]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # The gate is on what is actually deployed. A flaw in build tooling runs
+      # on this runner and on a developer's laptop; it does not reach a user,
+      # and failing the build on it would train everyone to ignore the job.
+      # Those findings are printed by the step below instead.
+      #
+      # --package-lock-only audits the resolved tree in the lockfile without
+      # installing it, which is both faster and a more honest question: it asks
+      # what we would ship, not what happens to be in node_modules.
+      - name: Block on high or critical in shipped dependencies
+        working-directory: ${{ matrix.project }}
+        run: npm audit --package-lock-only --omit=dev --audit-level=high
+
+      - name: Report everything else
+        if: always()
+        working-directory: ${{ matrix.project }}
+        run: npm audit --package-lock-only || true
