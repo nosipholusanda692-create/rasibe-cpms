@@ -95,7 +95,12 @@ CREATE TABLE consultant (
   user_id           uuid UNIQUE REFERENCES app_user(user_id) ON DELETE SET NULL,
   full_name         varchar(200) NOT NULL,
   preferred_name    varchar(100),
-  id_number         varchar(40) UNIQUE,            -- restricted: administrator only
+  -- NFR-SEC-005. Encrypted by the API before it arrives; the database never
+  -- holds the key. Width is no longer a meaningful constraint on ciphertext.
+  id_number         text,                          -- restricted: administrator only
+  -- Uniqueness moved here. Ciphertext differs on every write, so a unique index
+  -- on id_number would never collide. This is an HMAC of the normalised value.
+  id_number_bidx    char(64) UNIQUE,               -- restricted: administrator only
   date_of_birth     date,
   email             varchar(255) NOT NULL UNIQUE,
   mobile            varchar(40),
@@ -110,10 +115,13 @@ CREATE TABLE consultant (
   min_pay_rate      numeric(12,2) CHECK (min_pay_rate IS NULL OR min_pay_rate >= 0),
   preferred_pay_rate numeric(12,2) CHECK (preferred_pay_rate IS NULL OR preferred_pay_rate >= 0),
   rate_unit         rate_unit_enum NOT NULL DEFAULT 'HOURLY',
-  vetting_status    varchar(60),                   -- restricted: administrator only
+  -- NFR-SEC-005, as above. vetting_cleared_on stays a date on purpose: a
+  -- clearance date on its own discloses nothing without the outcome beside it,
+  -- and encrypting it would cost the ability to query or sort by it.
+  vetting_status    text,                          -- restricted: administrator only
   vetting_cleared_on date,                         -- restricted: administrator only
-  bank_name         varchar(120),                  -- restricted: administrator only
-  bank_account_ref  varchar(80),                   -- restricted: administrator only
+  bank_name         text,                          -- restricted: administrator only
+  bank_account_ref  text,                          -- restricted: administrator only
   consent_recorded_at timestamptz,
   retention_expires_on date,
   is_active         boolean NOT NULL DEFAULT true,

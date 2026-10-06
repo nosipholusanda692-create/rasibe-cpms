@@ -9,7 +9,7 @@
  * Run with:  npm test
  */
 import { createApp } from '../index.js';
-import { closePool } from '../lib/db.js';
+import { closePool, withActor, type Actor } from '../lib/db.js';
 import type { Server } from 'node:http';
 
 const PORT = Number(process.env.TEST_PORT ?? 4100);
@@ -685,6 +685,112 @@ async function main() {
     });
     check('signing in straight after signing out is accepted',
       signInAgain.status === 200, signInAgain.status);
+
+    // -----------------------------------------------------------------
+    section('Encryption at rest (NFR-SEC-005)');
+    // -----------------------------------------------------------------
+    // Last, because it creates consultants. Anything earlier that picks the
+    // first row of a list would otherwise start seeing these instead.
+    const me = (await admin.get('/auth/me')).body;
+    const adminActor: Actor = { userId: me.user.userId, role: 'ADMINISTRATOR' };
+
+    // Read the table directly. Going through the API would only prove the API
+    // is consistent with itself; the claim is about what a stolen copy of the
+    // database would contain.
+    const stored = await withActor(adminActor, async (db) =>
+      (await db.query(
+        `SELECT id_number, bank_name, bank_account_ref, vetting_status, id_number_bidx
+           FROM consultant WHERE consultant_id = $1`,
+        [c.user.consultantId],
+      )).rows[0],
+    );
+
+    check('the identity number is ciphertext in the database',
+      typeof stored.id_number === 'string' && stored.id_number.startsWith('v1:'),
+      stored.id_number);
+    check('banking details are ciphertext in the database',
+      typeof stored.bank_account_ref === 'string' && stored.bank_account_ref.startsWith('v1:'),
+      stored.bank_account_ref);
+    check('the vetting outcome is ciphertext in the database',
+      typeof stored.vetting_status === 'string' && stored.vetting_status.startsWith('v1:'),
+      stored.vetting_status);
+    check('the identity number is not recoverable from the stored value',
+      !String(stored.id_number).includes('9107045000000'));
+
+    // The backfill is a migration, and a migration that half ran is worse than
+    // one that did not. Nothing in clear may survive it.
+    const leftovers = await withActor(adminActor, async (db) =>
+      (await db.query(
+        `SELECT count(*)::int AS n FROM consultant
+          WHERE (id_number IS NOT NULL AND id_number NOT LIKE 'v1:%')
+             OR (bank_name IS NOT NULL AND bank_name NOT LIKE 'v1:%')
+             OR (bank_account_ref IS NOT NULL AND bank_account_ref NOT LIKE 'v1:%')
+             OR (vetting_status IS NOT NULL AND vetting_status NOT LIKE 'v1:%')`,
+      )).rows[0].n,
+    );
+    check('no restricted value is left in clear anywhere in the table',
+      leftovers === 0, leftovers);
+
+    const readBack = await admin.get(`/consultants/${c.user.consultantId}`);
+    check('the administrator still reads the identity number as text',
+      readBack.body.id_number === '9107045000000', readBack.body.id_number);
+    check('the blind index is never sent to the client',
+      readBack.body.id_number_bidx === undefined);
+
+    // Uniqueness has to survive the move onto the fingerprint, or two records
+    // for one person become possible and nothing would notice.
+    const firstNew = await admin.post('/consultants', {
+      fullName: 'Fixture One', email: 'fixture.one@example.co.za', idNumber: '9001015800085',
+    });
+    check('a consultant with an identity number can be created',
+      firstNew.status === 201, firstNew.body);
+
+    const duplicateId = await admin.post('/consultants', {
+      fullName: 'Fixture Two', email: 'fixture.two@example.co.za', idNumber: '9001015800085',
+    });
+    check('a duplicate identity number is still refused',
+      duplicateId.status === 409, duplicateId.status);
+    check('the refusal names the identity number rather than leaking the column',
+      typeof duplicateId.body.message === 'string'
+      && duplicateId.body.message.includes('identity number'), duplicateId.body.message);
+
+    // Normalisation matters: the same number typed with spaces is the same
+    // person, and the fingerprint has to agree even though the text differs.
+    const spaced = await admin.post('/consultants', {
+      fullName: 'Fixture Three', email: 'fixture.three@example.co.za',
+      idNumber: '900101 5800 085',
+    });
+    check('the same identity number spaced differently still collides',
+      spaced.status === 409, spaced.status);
+
+    const createdId = firstNew.body.consultant_id;
+    const storedNew = await withActor(adminActor, async (db) =>
+      (await db.query(`SELECT id_number, id_number_bidx FROM consultant WHERE consultant_id = $1`,
+        [createdId])).rows[0],
+    );
+    check('a value written through the API is encrypted, not stored as typed',
+      storedNew.id_number.startsWith('v1:') && !storedNew.id_number.includes('9001015800085'));
+    check('the blind index is recorded alongside it',
+      typeof storedNew.id_number_bidx === 'string' && storedNew.id_number_bidx.length === 64);
+
+    // Editing has its own path through the route, and it has to keep the pair
+    // in step. A stale fingerprint would let the old number be reused.
+    const edited = await admin.patch(`/consultants/${createdId}`, { idNumber: '9202025800086' });
+    check('an identity number can be changed', edited.status === 200, edited.body);
+    check('the change is readable as text', edited.body.id_number === '9202025800086');
+
+    const afterEdit = await withActor(adminActor, async (db) =>
+      (await db.query(`SELECT id_number_bidx FROM consultant WHERE consultant_id = $1`,
+        [createdId])).rows[0].id_number_bidx,
+    );
+    check('the blind index moved with the value',
+      afterEdit !== storedNew.id_number_bidx);
+
+    const reuseOld = await admin.post('/consultants', {
+      fullName: 'Fixture Four', email: 'fixture.four@example.co.za', idNumber: '9001015800085',
+    });
+    check('the identity number that was edited away can be used again',
+      reuseOld.status === 201, reuseOld.status);
   } finally {
     server.close();
     await closePool();

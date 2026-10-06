@@ -1,4 +1,5 @@
 import type { Role } from './db.js';
+import { decrypt } from './crypto.js';
 
 // ---------------------------------------------------------------------
 // Errors
@@ -35,7 +36,8 @@ export function translateDbError(err: any): AppError {
   if (code === '23505') {
     if (constraint === 'uq_submission')
       return conflict('This consultant has already been submitted to this request (BR-022).');
-    if (constraint === 'consultant_id_number_key')
+    // The constraint sits on the blind index now, not the value (NFR-SEC-005).
+    if (constraint === 'consultant_id_number_bidx_key')
       return conflict('A consultant with that identity number already exists.');
     if (constraint === 'consultant_email_key' || constraint === 'app_user_email_key')
       return conflict('That email address is already in use.');
@@ -89,10 +91,30 @@ const NEVER_FOR_RECRUITER = ['margin_amount', 'margin', 'bank_name', 'bank_accou
   'vetting_status', 'vetting_cleared_on'];
 const ADMIN_ONLY = ['bank_name', 'bank_account_ref', 'id_number', 'vetting_status', 'vetting_cleared_on'];
 
+// NFR-SEC-005. Stored as ciphertext, so they are decrypted on the way out.
+// Every response row passes through project(), which makes this the one place
+// the plaintext is reassembled and keeps the routes unaware of it entirely.
+const ENCRYPTED = ['id_number', 'bank_name', 'bank_account_ref', 'vetting_status'];
+
+// The blind index exists only to enforce uniqueness inside the database. It is
+// a fingerprint of the identity number and has no business meaning, so it is
+// removed for every role rather than being treated as a restricted field.
+const INTERNAL = ['id_number_bidx'];
+
 function stripKeys<T extends Record<string, any>>(row: T, keys: string[]): T {
   const out: Record<string, any> = {};
   for (const [k, v] of Object.entries(row)) {
     if (!keys.includes(k)) out[k] = v;
+  }
+  return out as T;
+}
+
+/** Decrypts in place, then drops the blind index. Runs before any role filter. */
+function reveal<T extends Record<string, any>>(row: T): T {
+  const out: Record<string, any> = {};
+  for (const [k, v] of Object.entries(row)) {
+    if (INTERNAL.includes(k)) continue;
+    out[k] = ENCRYPTED.includes(k) && typeof v === 'string' ? decrypt(v) : v;
   }
   return out as T;
 }
@@ -104,17 +126,19 @@ export function project(role: Role, input: any): any {
   if (Array.isArray(input)) return input.map((r) => project(role, r));
   if (input === null || typeof input !== 'object') return input;
 
+  const row = reveal(input);
+
   switch (role) {
     case 'ADMINISTRATOR':
-      return input;
+      return row;
     case 'RECRUITER':
-      return stripKeys(input, NEVER_FOR_RECRUITER);
+      return stripKeys(row, NEVER_FOR_RECRUITER);
     case 'CONSULTANT':
-      return stripKeys(input, [...NEVER_FOR_CONSULTANT, ...ADMIN_ONLY]);
+      return stripKeys(row, [...NEVER_FOR_CONSULTANT, ...ADMIN_ONLY]);
     case 'CLIENT_MANAGER':
-      return stripKeys(input, [...NEVER_FOR_CLIENT, ...ADMIN_ONLY, 'mobile', 'email', 'date_of_birth']);
+      return stripKeys(row, [...NEVER_FOR_CLIENT, ...ADMIN_ONLY, 'mobile', 'email', 'date_of_birth']);
     default:
-      return stripKeys(input, [...NEVER_FOR_CONSULTANT, ...NEVER_FOR_CLIENT, ...ADMIN_ONLY]);
+      return stripKeys(row, [...NEVER_FOR_CONSULTANT, ...NEVER_FOR_CLIENT, ...ADMIN_ONLY]);
   }
 }
 

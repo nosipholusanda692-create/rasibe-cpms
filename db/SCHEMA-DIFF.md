@@ -41,7 +41,7 @@ Same 17-type count, not the same types.
 
 | Design | Running `db/` |
 | --- | --- |
-| `id_number_type_enum` (`SA_ID`, `PASSPORT`) | No such type. `consultant.id_number` is `varchar(40)` |
+| `id_number_type_enum` (`SA_ID`, `PASSPORT`) | No such type. `consultant.id_number` is `text`, holding ciphertext |
 | `engagement_enum` | Same values, named `engagement_type_enum` |
 | `availability_enum` includes `ARCHIVED` | No `ARCHIVED`. Leaving the pool is `is_active` / `is_anonymised` |
 | `document_type_enum` has `ID`, `QUALIFICATION`, `VETTING_RESULT`, `RIGHT_TO_WORK`, `CLIENT_AGREEMENT`, `REFERENCE` | `CV`, `CONTRACT`, `CERTIFICATION`, `VETTING`, `ID_DOCUMENT`, `OTHER` |
@@ -61,4 +61,4 @@ The design-folder suite, including Luhn identity checks and `consultant_demograp
 
 ## Still plaintext
 
-`id_number`, `vetting_status` and `bank_account_ref` are not encrypted. That is RCP-08 (NFR-SEC-005), not this ticket.
+Nothing restricted remains. `id_number`, `bank_name`, `bank_account_ref` and `vetting_status` are stored as ciphertext by the API (RCP-08, NFR-SEC-005), with `id_number_bidx` carrying the uniqueness that ciphertext cannot. `vetting_cleared_on` stays a date on purpose; see `docs/ENCRYPTION.md`.

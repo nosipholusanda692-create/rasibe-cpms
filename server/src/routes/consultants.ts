@@ -4,6 +4,9 @@ import { query, withActor } from '../lib/db.js';
 import { badRequest, notFound, forbidden, project, assertCapability } from '../lib/errors.js';
 import { requireAuth, requireInternal } from '../middleware/auth.js';
 import { audit } from '../services/notify.js';
+// NFR-SEC-005. The identity number is encrypted before it reaches the database.
+// Reads need nothing here: project() decrypts on the way out.
+import { encrypt, blindIndex } from '../lib/crypto.js';
 
 export const consultantsRouter = Router();
 
@@ -221,14 +224,14 @@ consultantsRouter.post('/', requireInternal, async (req, res, next) => {
       `INSERT INTO consultant (full_name, preferred_name, email, mobile, id_number, location,
                                nationality, right_to_work, seniority, headline, experience_years,
                                availability, available_from, min_pay_rate, preferred_pay_rate,
-                               retention_expires_on)
+                               retention_expires_on, id_number_bidx)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::seniority_enum,$10,$11,$12::availability_enum,$13,$14,$15,
-               (now() + ($16 || ' months')::interval)::date)
+               (now() + ($16 || ' months')::interval)::date, $17)
        RETURNING *`,
-      [b.fullName, b.preferredName ?? null, b.email, b.mobile ?? null, b.idNumber ?? null,
+      [b.fullName, b.preferredName ?? null, b.email, b.mobile ?? null, encrypt(b.idNumber),
        b.location ?? null, b.nationality ?? null, b.rightToWork ?? null, b.seniority ?? null,
        b.headline ?? null, b.experienceYears ?? null, b.availability, b.availableFrom ?? null,
-       b.minPayRate ?? null, b.preferredPayRate ?? null, String(months)],
+       b.minPayRate ?? null, b.preferredPayRate ?? null, String(months), blindIndex(b.idNumber)],
     );
     res.status(201).json(project(req.actor!.role, rows[0]));
   } catch (e) {
@@ -254,7 +257,7 @@ consultantsRouter.patch('/:id', requireAuth, async (req, res, next) => {
     const params: unknown[] = [id];
     const map: Record<string, string> = {
       fullName: 'full_name', preferredName: 'preferred_name', email: 'email', mobile: 'mobile',
-      idNumber: 'id_number', location: 'location', nationality: 'nationality',
+      location: 'location', nationality: 'nationality',
       rightToWork: 'right_to_work', headline: 'headline', experienceYears: 'experience_years',
       availableFrom: 'available_from', minPayRate: 'min_pay_rate',
       preferredPayRate: 'preferred_pay_rate',
@@ -267,6 +270,16 @@ consultantsRouter.patch('/:id', requireAuth, async (req, res, next) => {
       if (req.actor!.role === 'CONSULTANT' && forbiddenForConsultant.includes(k)) continue;
       if (k === 'seniority') { params.push(v); sets.push(`seniority = $${params.length}::seniority_enum`); continue; }
       if (k === 'availability') { params.push(v); sets.push(`availability = $${params.length}::availability_enum`); continue; }
+      // NFR-SEC-005. One field in, two columns out: the encrypted value and the
+      // fingerprint that carries its UNIQUE constraint. They must move together
+      // or a later duplicate would slip past.
+      if (k === 'idNumber') {
+        params.push(encrypt(v as string | null));
+        sets.push(`id_number = $${params.length}`);
+        params.push(blindIndex(v as string | null));
+        sets.push(`id_number_bidx = $${params.length}`);
+        continue;
+      }
       const col = map[k];
       if (!col) continue;
       params.push(v);
