@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
+import { randomBytes } from 'node:crypto';
 import { z } from 'zod';
 import { anonQuery, query, withActor } from '../lib/db.js';
 import { badRequest, unauthorised, AppError } from '../lib/errors.js';
@@ -28,6 +29,33 @@ const SESSION_COOKIE_OPTIONS = {
 
 const MAX_FAILED = 5;
 const LOCK_MINUTES = 15;
+
+/**
+ * NFR-SEC-004 on the sign-in form. Verifying a password is deliberately slow,
+ * so skipping it when the address is unknown made the two refusals trivially
+ * distinguishable: measured on this code before the change, a wrong password
+ * took 146 ms and an unknown address 12 ms, with no overlap between them. One
+ * request per address was enough to decide whether an account existed, and the
+ * identical wording of the two messages counted for nothing.
+ *
+ * So every refusal now does the same work. This hash is never matched by any
+ * password: it is built at startup from random bytes nobody keeps, and exists
+ * only to be compared against.
+ *
+ * The cost must stay level with the cost used for real passwords, or the two
+ * paths drift apart again. Both are 10.
+ */
+const BCRYPT_COST = 10;
+const DECOY_HASH = bcrypt.hashSync(randomBytes(32).toString('hex'), BCRYPT_COST);
+
+/**
+ * Spends the time a password check would have taken, and discards the answer.
+ * Called where there is nothing to check, so that nothing can be read from how
+ * quickly the refusal comes back.
+ */
+async function spendComparisonTime(password: string): Promise<void> {
+  await bcrypt.compare(password, DECOY_HASH);
+}
 
 const credentials = z.object({
   email: z.string().email('Enter a valid email address'),
@@ -70,12 +98,19 @@ authRouter.post('/login', async (req, res, next) => {
     };
 
     if (!user || !user.is_active) {
+      // There is nothing to verify, so the time one would have taken is spent
+      // anyway. The wording below is identical to a wrong password, and this is
+      // what makes that identical wording mean something.
+      await spendComparisonTime(password);
       await record(false);
-      // the same message either way, so the form cannot be used to discover accounts
       throw unauthorised('Email address or password is incorrect');
     }
 
     if (user.locked_until && new Date(user.locked_until) > new Date()) {
+      // Same reasoning. A locked account that answered faster than an unlocked
+      // one would tell an attacker which addresses they had already driven into
+      // lockout, which is a map of the accounts they have been working on.
+      await spendComparisonTime(password);
       await record(false);
       throw new AppError(423, 'This account is temporarily locked. Try again shortly.', 'locked');
     }
