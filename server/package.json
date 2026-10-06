@@ -7,7 +7,8 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
-    "test": "tsx src/test/run.ts"
+    "test": "tsx src/test/run.ts",
+    "encrypt-existing": "tsx src/scripts/encrypt-existing.ts"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

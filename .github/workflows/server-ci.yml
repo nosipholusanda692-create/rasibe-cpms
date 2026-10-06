@@ -60,6 +60,20 @@ jobs:
           done
           psql -v ON_ERROR_STOP=1 -c "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO rasibe_app; GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO rasibe_app; REVOKE UPDATE, DELETE ON audit_entry FROM rasibe_app;"
 
+      # The seed files write identity and banking details in clear, because the
+      # encryption key lives in the API and never reaches PostgreSQL. This is
+      # the same step that runs on deploy day against existing data.
+      - name: Encrypt the seeded restricted values
+        working-directory: server
+        env:
+          PGHOST: localhost
+          PGPORT: 5432
+          PGDATABASE: rasibe
+          PGUSER: rasibe_app
+          PGPASSWORD: rasibe_app_pw
+          NODE_ENV: test
+        run: npm run encrypt-existing
+
       - name: Run the server tests
         working-directory: server
         env:
