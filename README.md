@@ -187,7 +187,7 @@ The sign-in screen lists these; click a row to fill the form in.
 
 ```bash
 cd server
-npm test                  # 149 integration assertions
+npm test                  # 162 integration assertions
 npx tsx src/test/e2e.ts   # 19 assertions over the screens the web client loads
 ```
 
@@ -222,7 +222,7 @@ follow rather than something the repository guarantees.
 
 | Check | What it would catch |
 | --- | --- |
-| Server CI | A regression in any of the 149 behavioural assertions |
+| Server CI | A regression in any of the 162 behavioural assertions |
 | Database tests | A row-level security policy or trigger that stopped holding |
 | Secret scan | A credential committed to the repository |
 | Dependency audit (server) | A known flaw in something the API ships |

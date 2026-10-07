@@ -31,6 +31,63 @@ const MAX_FAILED = 5;
 const LOCK_MINUTES = 15;
 
 /**
+ * FR-AUT-009, the half the account lockout cannot reach.
+ *
+ * Locking an account after five failures stops many passwords being tried
+ * against one account. It does nothing about one password being tried against
+ * many accounts: each account sees a single failure, no counter approaches
+ * five, and an attacker works through a list of addresses unhindered. That is
+ * the attack that actually succeeds against real systems, because it only
+ * needs one person to have chosen a common password.
+ *
+ * Twenty rather than five, because this counter aggregates strangers. An
+ * account's failures belong to one person; an address's failures belong to
+ * everyone behind it, and a client site behind one corporate NAT can produce
+ * several honest mistakes in fifteen minutes. The two limits protect different
+ * things and a shared address has to absorb ordinary human error from a whole
+ * office without locking it out of approving timesheets.
+ */
+export const MAX_FAILED_PER_ADDRESS = 20;
+const ADDRESS_WINDOW_MINUTES = 15;
+
+/**
+ * The unit the throttle counts against.
+ *
+ * IPv4 is counted exactly. IPv6 is counted by its /64, because a single
+ * subscriber is routinely handed a whole /64 and anyone renting IPv6 can have
+ * millions of addresses for nothing — counting exact IPv6 addresses would be a
+ * control an attacker never even notices.
+ *
+ * Returned separately from the address itself so that `login_attempt` keeps
+ * recording exactly who connected (FR-AUT-011) while the throttle counts the
+ * wider group.
+ */
+export function throttleKey(ip: string | null | undefined): string | null {
+  if (!ip) return null;
+  const bare = ip.split('%')[0]; // drop any IPv6 zone index
+
+  // A dual-stack socket reports IPv4 callers as ::ffff:203.0.113.5, which must
+  // not be mistaken for an IPv6 address and widened to a /64.
+  const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i.exec(bare);
+  if (mapped) return mapped[1];
+  if (!bare.includes(':')) return bare;
+
+  const sides = bare.split('::');
+  let groups: string[];
+  if (sides.length === 2) {
+    const head = sides[0] ? sides[0].split(':') : [];
+    const tail = sides[1] ? sides[1].split(':') : [];
+    groups = [...head, ...Array(Math.max(0, 8 - head.length - tail.length)).fill('0'), ...tail];
+  } else {
+    groups = bare.split(':');
+  }
+  // Normalised through a number so that 2001:0db8 and 2001:db8 are one key
+  // rather than two, which would otherwise double an attacker's budget.
+  const prefix = groups.slice(0, 4).map((g) => (parseInt(g || '0', 16) || 0).toString(16));
+  return `${prefix.join(':')}::/64`;
+}
+
+/**
  * NFR-SEC-004 on the sign-in form. Verifying a password is deliberately slow,
  * so skipping it when the address is unknown made the two refusals trivially
  * distinguishable: measured on this code before the change, a wrong password
@@ -78,6 +135,35 @@ authRouter.post('/login', async (req, res, next) => {
     }
     const { email, password } = parsed.data;
     const ip = req.ip ?? null;
+    const prefix = throttleKey(ip);
+
+    // Asked before the account is looked up, which is what keeps it from
+    // becoming an enumeration oracle: the answer depends only on the caller's
+    // own address and is the same whatever address they are guessing at.
+    //
+    // It also returns without spending a comparison. NFR-SEC-004 equalises the
+    // paths that reveal whether an account exists; this one reveals nothing of
+    // the sort, and burning a deliberately slow hash on every request from an
+    // address already known to be attacking would hand that attacker a way to
+    // exhaust the server instead.
+    if (prefix) {
+      const recent = await anonQuery<{ failures: string }>(
+        `SELECT count(*)::text AS failures
+           FROM login_attempt
+          WHERE ip_prefix = $1
+            AND NOT succeeded
+            AND attempted_at > now() - ($2::int * interval '1 minute')`,
+        [prefix, ADDRESS_WINDOW_MINUTES],
+      );
+      if (Number(recent[0]?.failures ?? 0) >= MAX_FAILED_PER_ADDRESS) {
+        res.setHeader('Retry-After', String(ADDRESS_WINDOW_MINUTES * 60));
+        throw new AppError(
+          429,
+          'Too many sign-in attempts from this network. Try again shortly.',
+          'too_many_attempts',
+        );
+      }
+    }
 
     const users = await anonQuery<any>(
       `SELECT u.user_id, u.email, u.full_name, u.password_hash, u.is_active,
@@ -92,8 +178,8 @@ authRouter.post('/login', async (req, res, next) => {
     const user = users[0];
     const record = async (ok: boolean) => {
       await anonQuery(
-        `INSERT INTO login_attempt (email, succeeded, ip_address) VALUES ($1,$2,$3)`,
-        [email, ok, ip],
+        `INSERT INTO login_attempt (email, succeeded, ip_address, ip_prefix) VALUES ($1,$2,$3,$4)`,
+        [email, ok, ip, prefix],
       );
     };
 

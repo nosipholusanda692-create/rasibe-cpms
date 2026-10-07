@@ -84,8 +84,18 @@ CREATE TABLE login_attempt (
   email       varchar(255) NOT NULL,
   succeeded   boolean NOT NULL,
   ip_address  varchar(64),
+  -- What the per-address throttle counts against (FR-AUT-009). Held separately
+  -- from ip_address so the exact address stays on the record for FR-AUT-011:
+  -- for IPv6 the two differ, because the throttle groups a whole /64.
+  ip_prefix   varchar(64),
   attempted_at timestamptz NOT NULL DEFAULT now()
 );
+-- Partial, because the throttle only ever asks about failures. Successful
+-- sign-ins are the overwhelming majority of rows in normal use and would
+-- otherwise sit in the index without ever being read from it.
+CREATE INDEX ix_login_attempt_throttle
+  ON login_attempt(ip_prefix, attempted_at)
+  WHERE NOT succeeded;
 
 -- ---------------------------------------------------------------------
 -- Talent pool
