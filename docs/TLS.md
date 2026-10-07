@@ -66,6 +66,18 @@ Sign-out passes the same attributes to `clearCookie`. A cookie is removed by mat
 
 `req.ip` becomes the forwarded address once `trust proxy` is set, and `login_attempt` records it. If it were always on, any client could send its own `X-Forwarded-For` and choose what gets written there, which would corrupt the sign-in record (FR-AUT-011) and let an attacker step around the per-address throttle that RCP-10 adds. So it is set only where a proxy is known to be in front and is known to overwrite the header.
 
+## Which cipher suites are offered (RCP-20)
+
+`minVersion` decides which versions of the protocol are acceptable. It says nothing about which cipher suites are negotiated inside them, and TLS 1.2 still permits suites that use plain RSA key exchange. Those have no forward secrecy: the session key is encrypted to the server's public key, so anyone who records the traffic today and obtains the private key at any point afterwards can decrypt all of it retrospectively. A stolen key becomes a stolen archive.
+
+`server/src/lib/https.ts` now offers six suites and every one begins with `ECDHE`. The key for each session is derived from values both ends discard when the connection closes, so a key stolen later decrypts nothing that was recorded earlier. All six are also AEAD, meaning the cipher authenticates the data as well as encrypting it.
+
+`honorCipherOrder` is set with them. Without it the client's preference wins, and a client is free to prefer the weakest suite both ends will accept.
+
+TLS 1.3 negotiates its suites through a separate mechanism and all of them are already forward secret, so this list does not constrain it.
+
+The handshake itself is still not exercised — the suite speaks plain HTTP, and the attempt to test the version floor with a TLS 1.1 client was refused by OpenSSL before it ever reached the server. What is asserted is the policy: every suite in the list begins with `ECDHE`. That will not catch a broken handshake, but it does catch the change that is actually likely, which is somebody adding a suite later to make an old client work.
+
 ## Where the redirect points (RCP-19, CWE-601)
 
 The redirect used to be built from the request:

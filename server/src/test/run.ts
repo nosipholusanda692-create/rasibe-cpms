@@ -10,6 +10,7 @@
  */
 import { createApp } from '../index.js';
 import { anonQuery, closePool, withActor, type Actor } from '../lib/db.js';
+import { TLS_CIPHERS } from '../lib/https.js';
 import http, { type Server } from 'node:http';
 
 const PORT = Number(process.env.TEST_PORT ?? 4100);
@@ -586,6 +587,48 @@ async function main() {
       /;\s*Secure/i.test(sessionCookie), sessionCookie);
     check('the session cookie is HttpOnly', /HttpOnly/i.test(sessionCookie), sessionCookie);
     check('the session cookie is SameSite=Lax', /SameSite=Lax/i.test(sessionCookie), sessionCookie);
+
+    // -----------------------------------------------------------------
+    section('Security response headers (NFR-SEC-012)');
+    // -----------------------------------------------------------------
+    // helmet has always sent these. Until now only HSTS was asserted, so a
+    // change to the helmet options could have dropped the rest without a
+    // single check going red.
+    const h = (name: string) => health.headers.get(name) ?? '';
+
+    check('a content security policy is sent',
+      h('content-security-policy').length > 0, h('content-security-policy'));
+    // Both framing controls, because they disagree in a way that matters: a
+    // browser that understands frame-ancestors ignores X-Frame-Options, so
+    // the CSP directive is the one that actually decides.
+    check('framing is refused outright by X-Frame-Options',
+      h('x-frame-options').toUpperCase() === 'DENY', h('x-frame-options'));
+    check('framing is refused outright by the content security policy',
+      /frame-ancestors\s+'none'/.test(h('content-security-policy')),
+      h('content-security-policy'));
+    check('content type sniffing is refused',
+      h('x-content-type-options') === 'nosniff', h('x-content-type-options'));
+    check('the referrer is never sent onward',
+      h('referrer-policy') === 'no-referrer', h('referrer-policy'));
+    check('the browsing context is isolated from cross-origin openers',
+      h('cross-origin-opener-policy') === 'same-origin', h('cross-origin-opener-policy'));
+    check('legacy cross-domain policy files are refused',
+      h('x-permitted-cross-domain-policies') === 'none',
+      h('x-permitted-cross-domain-policies'));
+
+    // NFR-SEC-012 is about not describing the inside of the system. The
+    // version of the framework is part of that description: it tells an
+    // attacker which published advisories are worth trying.
+    check('the server does not name the framework it runs on',
+      h('x-powered-by') === '' && h('server') === '',
+      { xPoweredBy: h('x-powered-by'), server: h('server') });
+
+    // A handshake is not exercised here — the suite speaks plain HTTP — so
+    // this asserts the policy rather than the negotiation. It still catches
+    // the change that matters: a suite added later without forward secrecy.
+    check('every offered TLS cipher provides forward secrecy',
+      TLS_CIPHERS.length > 0 && TLS_CIPHERS.every((c) => c.startsWith('ECDHE-')),
+      TLS_CIPHERS);
 
     // -----------------------------------------------------------------
     section('Cross-site request forgery (NFR-SEC-008)');

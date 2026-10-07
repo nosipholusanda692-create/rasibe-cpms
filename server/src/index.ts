@@ -69,6 +69,11 @@ export function createApp() {
   const trustProxy = process.env.TRUST_PROXY;
   if (trustProxy) app.set('trust proxy', trustProxySetting(trustProxy));
 
+  // Express names itself in every response unless told not to. Helmet removes
+  // the header as well, so this is belt and braces: it keeps the version off
+  // the wire even if the helmet configuration below is ever narrowed.
+  app.disable('x-powered-by');
+
   app.use(
     helmet({
       // JSON API may be on a different origin from the client (CORS_ORIGIN).
@@ -78,6 +83,16 @@ export function createApp() {
       // it is inert rather than harmful in development. Preload itself is not
       // claimed here: it is a commitment that is difficult to withdraw.
       hsts: { maxAge: 31_536_000, includeSubDomains: true },
+      // Nothing this API serves is ever meant to be displayed inside a frame,
+      // so refuse it outright rather than accept helmet's SAMEORIGIN default.
+      frameguard: { action: 'deny' },
+      // The two framing controls have to agree. A browser that understands
+      // frame-ancestors ignores X-Frame-Options entirely, so leaving the
+      // default 'self' here would quietly undo the deny above.
+      contentSecurityPolicy: {
+        useDefaults: true,
+        directives: { frameAncestors: ["'none'"] },
+      },
     }),
   );
 
