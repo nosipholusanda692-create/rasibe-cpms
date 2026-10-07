@@ -21,14 +21,17 @@ rasibe/
 │   ├── 02_security.sql     database roles, row-level security, projection views
 │   ├── 03_triggers.sql     the five state machines and the financial invariants
 │   ├── 04_seed.sql         reference data and a demonstration data set
+│   ├── tests.sql           36 checks over the policies, triggers and invariants
 │   └── SCHEMA-DIFF.md      why db/ is the live schema, and how it differs from design
 ├── server/                 Node, Express and TypeScript API
 │   └── src/
-│       ├── index.ts        application wiring and error translation
-│       ├── lib/            database access, errors, field-level projection
+│       ├── index.ts        application wiring, security headers, error translation
+│       ├── lib/            database access, errors, field-level projection,
+│       │                   encryption at rest, CSRF tokens, TLS, redacted logging
 │       ├── middleware/     session authentication and role guards
 │       ├── routes/         the twelve route modules
 │       ├── services/       notification queue and audit log
+│       ├── scripts/        one-off tools: backfill encryption, measure sign-in timing
 │       └── test/           integration and end-to-end suites
 ├── web/                    React, Vite and TypeScript client
 │   └── src/
@@ -36,6 +39,10 @@ rasibe/
 │       ├── lib.tsx         API client, auth context, shared components
 │       ├── styles.css      design tokens taken from the approved prototype
 │       └── pages/          one module per screen
+├── docs/                   how each security control works, and what it does not cover
+├── scripts/                development certificate generation
+├── .github/workflows/      the six checks that run on every pull request
+├── .gitleaks.toml          secret scanning configuration
 └── README.md
 ```
 
@@ -180,16 +187,53 @@ The sign-in screen lists these; click a row to fill the form in.
 
 ```bash
 cd server
-npm test                  # 85 integration assertions
+npm test                  # 149 integration assertions
 npx tsx src/test/e2e.ts   # 19 assertions over the screens the web client loads
 ```
 
-Both run against the real database rather than against mocks. Every assertion
-goes through HTTP, the application layer and PostgreSQL, so a constraint or
-trigger that stopped working would fail the suite.
+```bash
+psql -U rasibe_app -d rasibe -v ON_ERROR_STOP=1 -f db/tests.sql   # 36 database checks
+```
 
-The integration suite writes data. Re-apply `04_seed.sql` against a freshly
-created database if you want to run it from a known state.
+All three run against the real database rather than against mocks. Every
+assertion goes through HTTP, the application layer and PostgreSQL, so a
+constraint or trigger that stopped working would fail the suite.
+
+The integration suite writes data and does not roll back. Re-apply `01` through
+`04` against a freshly created database before each run, or point it at a
+throwaway container; re-running it against a database it has already written to
+produces failures that look real but are not.
+
+`db/tests.sql` needs `PGOPTIONS=-c rasibe.tests_strict=on`. Without it a failed
+check is only a `NOTICE` and `psql` still exits 0, which is a false pass.
+
+---
+
+## Continuous integration
+
+Six checks run on every pull request and on every push to `main`. `docs/CI.md`
+explains what each one is for and, just as importantly, what none of them
+covers.
+
+They are not yet enforced. `main` has no branch protection rule, so a pull
+request can be merged with a check failing and a commit can be pushed to `main`
+without going through one at all. The checks are a convention the two of us
+follow rather than something the repository guarantees.
+
+| Check | What it would catch |
+| --- | --- |
+| Server CI | A regression in any of the 149 behavioural assertions |
+| Database tests | A row-level security policy or trigger that stopped holding |
+| Secret scan | A credential committed to the repository |
+| Dependency audit (server) | A known flaw in something the API ships |
+| Dependency audit (web) | A known flaw in something the client ships |
+| Web CI | A front end that no longer compiles for production |
+
+The dependency audit blocks on high and critical advisories in production
+dependencies only. Development-only findings are reported but do not fail the
+build, because a flaw in a bundler runs on the CI runner rather than reaching a
+user, and a check that goes red for things nobody can act on is a check
+everybody learns to ignore.
 
 ---
 
@@ -306,13 +350,38 @@ retention periods, company details and invoice numbering.
 
 ### Environment variables
 
+`server/.env.example` is the authoritative list and explains each one in place.
+Every security variable is optional in development and the system runs with
+none of them set, which is deliberate: a fresh clone and the test suite work
+with no setup.
+
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD` | localhost:5432 | Database connection |
 | `PORT` | 4000 | API port |
+| `NODE_ENV` | development | `production` hides internal error detail and makes the keys below mandatory |
 | `SESSION_TTL_HOURS` | 8 | Session lifetime |
 | `CORS_ORIGIN` | http://localhost:5173 | Permitted browser origin |
 | `SMTP_HOST` and related | empty | Email delivery, see below |
+
+Security settings. Each is covered by a document in `docs/`.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `DATA_ENCRYPTION_KEY` | derived | Encrypts identity, banking and vetting values. **Losing it loses that data** |
+| `DATA_INDEX_KEY` | derived | Derives the fingerprint that keeps the identity number unique |
+| `CSRF_SECRET` | random at boot | Signs the token protecting state-changing requests |
+| `TLS_CERT_FILE`, `TLS_KEY_FILE` | unset | Serve HTTPS from this process. Leave unset where a proxy terminates TLS |
+| `FORCE_HTTPS` | unset | Redirect plain HTTP to HTTPS with a 308 |
+| `PUBLIC_HOST` | unset | The host that redirect points at. **Required** when `FORCE_HTTPS` is on; startup refuses without it |
+| `TRUST_PROXY` | unset | Hop count or address list. Only when a proxy really is in front |
+| `PGSSLMODE`, `PGSSLROOTCERT` | disable | Encrypt the database connection. Hosted PostgreSQL needs at least `require` |
+
+Two of these have consequences worth stating plainly. With `NODE_ENV=production`
+the server **refuses to start** without `DATA_ENCRYPTION_KEY`, because the
+alternative is silently writing restricted data in clear. And the encryption key
+has to be backed up alongside the database but never inside it: a backup of the
+database without that key restores nothing readable.
 
 ---
 
