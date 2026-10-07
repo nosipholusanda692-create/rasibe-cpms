@@ -11,6 +11,7 @@
 import { createApp } from '../index.js';
 import { anonQuery, closePool, withActor, type Actor } from '../lib/db.js';
 import { TLS_CIPHERS } from '../lib/https.js';
+import { throttleKey, MAX_FAILED_PER_ADDRESS as MAX_PER_ADDRESS } from '../routes/auth.js';
 import http, { type Server } from 'node:http';
 
 const PORT = Number(process.env.TEST_PORT ?? 4100);
@@ -864,6 +865,12 @@ async function main() {
     // same machine, with no overlap: one request per address was enough.
     const SPARE = 'l.vanwyk@example.co.za';
 
+    // Every client here shares 127.0.0.1, so the per-address throttle counts
+    // this suite's own failures. Clearing first keeps the section measuring
+    // what it means to measure rather than whatever ran before it.
+    const clearAttempts = () => anonQuery(`DELETE FROM login_attempt`);
+    await clearAttempts();
+
     const clearLock = (email: string) =>
       anonQuery(
         `UPDATE app_user SET failed_logins = 0, locked_until = NULL WHERE lower(email) = lower($1)`,
@@ -877,6 +884,12 @@ async function main() {
       // Without this the sixth attempt onwards takes the locked branch and the
       // measurement quietly becomes an average of two different paths.
       await clearLock(email);
+      // And the address budget, for exactly the same reason. The two medians
+      // below need twenty-four refusals from one address, which is more than
+      // the per-address throttle allows, so without this the later samples are
+      // 429s returned without a comparison — a third path, and a fast one,
+      // which would drag both medians down and hide a real timing difference.
+      await clearAttempts();
       const started = performance.now();
       await timer.post('/auth/login', { email, password: 'DefinitelyNotThePassword!' });
       return performance.now() - started;
@@ -1007,6 +1020,95 @@ async function main() {
     else process.env.FORCE_HTTPS = savedForce;
     if (savedHost === undefined) delete process.env.PUBLIC_HOST;
     else process.env.PUBLIC_HOST = savedHost;
+
+    // -----------------------------------------------------------------
+    section('Per-address throttle (FR-AUT-009)');
+    // -----------------------------------------------------------------
+    // Last on purpose. It deliberately exhausts the budget for 127.0.0.1,
+    // which every client in this file shares, so anything after it would be
+    // answered 429 for reasons that have nothing to do with what it asserts.
+    check('an IPv4 address is counted exactly',
+      throttleKey('203.0.113.5') === '203.0.113.5', throttleKey('203.0.113.5'));
+    // A dual-stack socket reports IPv4 callers this way. Treating it as IPv6
+    // would widen one caller into a /64 and let them have the budget 2^64 times.
+    check('an IPv4-mapped address is not mistaken for IPv6',
+      throttleKey('::ffff:203.0.113.5') === '203.0.113.5', throttleKey('::ffff:203.0.113.5'));
+    check('IPv6 is counted by its /64, not by the exact address',
+      throttleKey('2001:db8:1:2:aaaa:bbbb:cccc:dddd') === '2001:db8:1:2::/64',
+      throttleKey('2001:db8:1:2:aaaa:bbbb:cccc:dddd'));
+    check('two addresses in one /64 share a budget',
+      throttleKey('2001:db8:1:2::1') === throttleKey('2001:db8:1:2:ffff:ffff:ffff:ffff'),
+      [throttleKey('2001:db8:1:2::1'), throttleKey('2001:db8:1:2:ffff:ffff:ffff:ffff')]);
+    check('a different /64 is a different budget',
+      throttleKey('2001:db8:1:2::1') !== throttleKey('2001:db8:1:3::1'));
+    // Abbreviated and written-out forms of one address must not be two keys.
+    check('leading zeros do not create a second budget',
+      throttleKey('2001:0db8:0001:0002::1') === throttleKey('2001:db8:1:2::1'),
+      [throttleKey('2001:0db8:0001:0002::1'), throttleKey('2001:db8:1:2::1')]);
+
+    await clearAttempts();
+    const sprayer = new Client('sprayer');
+
+    // The attack the account lockout cannot see. Each address is tried once,
+    // so no account ever reaches five failures and nothing would be locked.
+    const sprayStatuses: number[] = [];
+    for (let i = 0; i < MAX_PER_ADDRESS; i++) {
+      const r = await sprayer.post('/auth/login', {
+        email: `spray.${i}@example.co.za`, password: 'Password123!',
+      });
+      sprayStatuses.push(r.status);
+    }
+    check('spraying one password across many accounts is not stopped by the account lockout',
+      sprayStatuses.every((s) => s === 401), [...new Set(sprayStatuses)]);
+
+    const throttled = await sprayer.post('/auth/login', {
+      email: 'spray.another@example.co.za', password: 'Password123!',
+    });
+    check('the address is throttled once the budget is spent',
+      throttled.status === 429, { status: throttled.status, body: throttled.body });
+    check('the throttled refusal says nothing about any account',
+      throttled.body?.error === 'too_many_attempts'
+      && !/password|email|account exist/i.test(throttled.body?.message ?? ''),
+      throttled.body);
+
+    // The block is on the address, so a correct credential from it is refused
+    // too. That is the point: an attacker who finally guesses right is still
+    // stopped, and it is why the limit has to be generous enough for an office.
+    // Sent raw so the Retry-After header can be read, but with the sprayer's
+    // token: CSRF is checked in middleware, ahead of the route, so a request
+    // without one is refused 403 and never reaches the throttle at all.
+    const sprayToken = sprayer.cookies.get('rasibe_csrf') ?? '';
+    const correctWhileThrottled = await fetch(`${BASE}/auth/login`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Cookie: `rasibe_csrf=${sprayToken}`,
+        'X-CSRF-Token': sprayToken,
+      },
+      body: JSON.stringify({ email: 'christinah@rasibe.co.za', password: 'Password123!' }),
+    });
+    check('a correct password from a throttled address is still refused',
+      correctWhileThrottled.status === 429, correctWhileThrottled.status);
+    check('the throttled response carries Retry-After',
+      Number(correctWhileThrottled.headers.get('retry-after')) > 0,
+      correctWhileThrottled.headers.get('retry-after'));
+
+    // Only failures count, and only recent ones. Clearing the window is the
+    // same thing the passage of fifteen minutes would do.
+    await clearAttempts();
+    const afterWindow = await new Client('recovered').post('/auth/login', {
+      email: 'christinah@rasibe.co.za', password: 'Password123!',
+    });
+    check('the address recovers once the window has passed',
+      afterWindow.status === 200, afterWindow.status);
+
+    const prefixRows = await anonQuery<any>(
+      `SELECT ip_address, ip_prefix FROM login_attempt ORDER BY attempt_id DESC LIMIT 1`,
+    );
+    check('the exact address is still recorded alongside the throttle key (FR-AUT-011)',
+      !!prefixRows[0]?.ip_address && !!prefixRows[0]?.ip_prefix, prefixRows[0]);
+
+    await clearAttempts();
   } finally {
     server.close();
     await closePool();

@@ -26,7 +26,7 @@ These are what the API already queries. The design file has never had them.
 | Table | Why it is here |
 | --- | --- |
 | `user_session` | Cookie session: issued, expires, revoked, address. Read by `server/src/middleware/auth.ts`. |
-| `login_attempt` | Each sign-in attempt, success or failure, with timestamp and address (FR-AUT-011). |
+| `login_attempt` | Each sign-in attempt, success or failure, with timestamp and address (FR-AUT-011). `ip_prefix` and a partial index on failures carry the per-address throttle (RCP-10, FR-AUT-009); the exact address stays in `ip_address`. |
 | `system_setting` | Administrator settings without a deployment (cycle, hour ceiling, invoice numbering). |
 
 ## Tables only in the design file

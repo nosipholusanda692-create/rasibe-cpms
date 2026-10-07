@@ -80,8 +80,9 @@ returning the ordinary refusal instead.
 
 **Per-address throttling is not account enumeration's only route.** Sign-in is
 still answerable as fast as bcrypt allows, so an attacker can work through a
-list at that rate. Limiting attempts by origin rather than by account is
-RCP-10.
+list at that rate. Limiting attempts by origin rather than by account was
+delivered as RCP-10; see `docs/THROTTLE.md`. Note that the throttled refusal is
+deliberately *not* time-equalised, and why, is set out there.
 
 ## Evidence
 
