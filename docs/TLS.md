@@ -31,6 +31,7 @@ flowchart LR
 | --- | --- |
 | `TLS_CERT_FILE`, `TLS_KEY_FILE` | Both set: serve HTTPS, minimum TLS 1.2. Either unset: serve plain HTTP |
 | `FORCE_HTTPS` | `true` redirects plain HTTP to HTTPS with a 308 |
+| `PUBLIC_HOST` | The host that redirect points at. Required when `FORCE_HTTPS` is `true`; startup refuses without it |
 | `TRUST_PROXY` | Hop count or address list. Only when a proxy is genuinely in front |
 | `PGSSLMODE` | `disable` (default), `require`, or `verify-full` for the database connection |
 | `PGSSLROOTCERT` | Certificate authority file, for `verify-full` against a private authority |
@@ -65,9 +66,27 @@ Sign-out passes the same attributes to `clearCookie`. A cookie is removed by mat
 
 `req.ip` becomes the forwarded address once `trust proxy` is set, and `login_attempt` records it. If it were always on, any client could send its own `X-Forwarded-For` and choose what gets written there, which would corrupt the sign-in record (FR-AUT-011) and let an attacker step around the per-address throttle that RCP-10 adds. So it is set only where a proxy is known to be in front and is known to overwrite the header.
 
+## Where the redirect points (RCP-19, CWE-601)
+
+The redirect used to be built from the request:
+
+    res.redirect(308, `https://${req.headers.host}${req.originalUrl}`);
+
+`Host` is supplied by whoever is calling. A request carrying `Host: attacker.example` was answered with `Location: https://attacker.example/...`, so the caller chose where the browser went — and because the redirect is a 308, the method and body were carried there too. A link to the real service was enough to land a user somewhere else, which is worth more to an attacker than it sounds: the page they arrive at can be a convincing copy of the sign-in form.
+
+The destination is now configuration. `PUBLIC_HOST` is read once at startup, checked to be a bare host or `host:port`, and used for every redirect regardless of what the request says.
+
+Startup refuses when `FORCE_HTTPS` is `true` and `PUBLIC_HOST` is absent, rather than falling back to the request. A fallback would reintroduce the exact behaviour being removed, and would do it silently on the one deployment where somebody forgot the variable. A server that will not boot is the louder failure, and the louder failure is the right one here.
+
+The same check rejects a value carrying a scheme, a path, a credential or whitespace, so a misconfigured variable cannot quietly point the redirect somewhere else either.
+
 ## Evidence
 
 The server suite asserts the HSTS header, that the session cookie carries `Secure` and `HttpOnly`, and that the redirect stays inactive when `FORCE_HTTPS` is unset. Those run on every pull request as part of Server CI.
+
+For the redirect destination it builds a second application with `FORCE_HTTPS` on — the suite itself drives plain HTTP with it off, so the branch is otherwise unreachable — and requests it through `node:http` rather than `fetch`, because `fetch` will not send a chosen `Host` header and forging one is the entire point. It asserts that an unencrypted request is redirected, that the destination is the configured host, that a forged `Host` header changes nothing, that the forged value appears nowhere in the response, that the path and query survive, and that startup refuses both a missing and a malformed `PUBLIC_HOST`.
+
+Five of those eight checks were confirmed to fail against the code as it stood before this ticket, with the forged request answered `https://attacker.example/api/health`. The three that passed did so because a request with an honest `Host` header produced the right answer even when built the wrong way, which is precisely why asserting the happy path alone would not have caught this.
 
 ## At deployment
 
@@ -75,6 +94,6 @@ The server suite asserts the HSTS header, that the session cookie carries `Secur
 2. Set `NODE_ENV=production`, which also hides internal error detail (NFR-SEC-012).
 3. Point `CORS_ORIGIN` at the real web origin.
 4. Set `TRUST_PROXY` if anything sits in front, and confirm the edge overwrites `X-Forwarded-For` rather than appending to a client-supplied value.
-5. Set `FORCE_HTTPS=true`.
+5. Set `FORCE_HTTPS=true`, and `PUBLIC_HOST` to the canonical host. The process will not start with one and not the other.
 6. Set `PGSSLMODE`. Managed PostgreSQL needs at least `require`.
 7. Arrange renewal. A certificate that silently expires is an outage.

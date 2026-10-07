@@ -38,6 +38,31 @@ function trustProxySetting(raw: string): number | boolean | string {
   return raw;
 }
 
+/**
+ * The host the HTTPS redirect points at (NFR-SEC-001).
+ *
+ * It cannot be taken from the request. `Host` is supplied by whoever is
+ * calling, so building a redirect out of it lets the caller choose where the
+ * response sends the browser (CWE-601) — and a 308 carries the method and body
+ * there with it. The destination is configuration, and startup refuses rather
+ * than guessing, because a redirect that silently points somewhere attacker
+ * chosen is worse than a server that will not boot.
+ */
+function canonicalHost(raw: string | undefined): string {
+  if (!raw) {
+    throw new Error(
+      'FORCE_HTTPS needs PUBLIC_HOST set to the canonical host, for example cpms.rasibe.co.za',
+    );
+  }
+  // A bare host, optionally with a port. Anything carrying a scheme, a path, a
+  // credential or whitespace could move the destination off that host, which is
+  // the whole point of reading it from configuration in the first place.
+  if (!/^[a-z0-9.-]+(:\d+)?$/i.test(raw)) {
+    throw new Error(`PUBLIC_HOST must be a bare host or host:port, not ${JSON.stringify(raw)}`);
+  }
+  return raw;
+}
+
 export function createApp() {
   const app = express();
 
@@ -61,11 +86,12 @@ export function createApp() {
   // Behind a proxy, req.secure is the forwarded protocol, which is why this
   // needs TRUST_PROXY to be set as well.
   if (process.env.FORCE_HTTPS === 'true') {
+    const host = canonicalHost(process.env.PUBLIC_HOST);
     app.use((req, res, next) => {
       if (req.secure) return next();
       // 308 rather than 302: the method and body survive, so a POST is not
       // silently downgraded to a GET on the way to the secure URL.
-      res.redirect(308, `https://${req.headers.host}${req.originalUrl}`);
+      res.redirect(308, `https://${host}${req.originalUrl}`);
     });
   }
 

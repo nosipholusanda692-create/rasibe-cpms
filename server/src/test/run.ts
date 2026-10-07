@@ -10,7 +10,7 @@
  */
 import { createApp } from '../index.js';
 import { anonQuery, closePool, withActor, type Actor } from '../lib/db.js';
-import type { Server } from 'node:http';
+import http, { type Server } from 'node:http';
 
 const PORT = Number(process.env.TEST_PORT ?? 4100);
 const BASE = `http://127.0.0.1:${PORT}/api`;
@@ -96,6 +96,27 @@ class Client {
     if (r.status !== 200) throw new Error(`${this.label} could not sign in: ${JSON.stringify(r.body)}`);
     return r.body;
   }
+}
+
+/**
+ * A request with a chosen Host header.
+ *
+ * `fetch` will not send one — undici treats Host as forbidden and sets it from
+ * the URL — and forging it is the whole point of the redirect checks below, so
+ * those go through node:http instead.
+ */
+function rawGet(port: number, path: string, hostHeader: string) {
+  return new Promise<{ status: number; location: string }>((resolve, reject) => {
+    const req = http.request(
+      { host: '127.0.0.1', port, path, method: 'GET', headers: { Host: hostHeader } },
+      (res) => {
+        res.resume();
+        resolve({ status: res.statusCode ?? 0, location: String(res.headers.location ?? '') });
+      },
+    );
+    req.on('error', reject);
+    req.end();
+  });
 }
 
 async function main() {
@@ -879,6 +900,70 @@ async function main() {
     const afterUnlock = await timer.post('/auth/login', { email: SPARE, password: 'Password123!' });
     check('the account signs in again once the lock is cleared',
       afterUnlock.status === 200, afterUnlock.status);
+
+    // -----------------------------------------------------------------
+    section('HTTPS redirect destination (NFR-SEC-001)');
+    // -----------------------------------------------------------------
+    // The suite drives plain HTTP with FORCE_HTTPS off, so the redirect is
+    // unreachable from the main app. A second one is built with it on.
+    const savedForce = process.env.FORCE_HTTPS;
+    const savedHost = process.env.PUBLIC_HOST;
+    const REAL_HOST = 'cpms.rasibe.co.za';
+    const FORGED = 'attacker.example';
+    let redirectServer: Server | null = null;
+    try {
+      process.env.FORCE_HTTPS = 'true';
+      process.env.PUBLIC_HOST = REAL_HOST;
+      const redirectPort = PORT + 1;
+      const redirectApp = createApp();
+      redirectServer = await new Promise<Server>((resolve) => {
+        const s = redirectApp.listen(redirectPort, () => resolve(s));
+      });
+
+      const plain = await rawGet(redirectPort, '/api/health', REAL_HOST);
+      check('an unencrypted request is redirected (308)', plain.status === 308, plain);
+      check('the redirect points at the configured host',
+        plain.location === `https://${REAL_HOST}/api/health`, plain.location);
+
+      // The vulnerability itself. The redirect used to be built from the Host
+      // header, which the caller supplies, so a request could choose where the
+      // response sent the browser — and a 308 takes the method and body along.
+      const forged = await rawGet(redirectPort, '/api/health', FORGED);
+      check('a forged Host header does not change the destination (CWE-601)',
+        forged.location === `https://${REAL_HOST}/api/health`, forged.location);
+      check('the forged host appears nowhere in the redirect',
+        !forged.location.includes(FORGED), forged.location);
+
+      const withQuery = await rawGet(redirectPort, '/api/consultants?seniority=SENIOR', FORGED);
+      check('the path and query survive the redirect',
+        withQuery.location === `https://${REAL_HOST}/api/consultants?seniority=SENIOR`,
+        withQuery.location);
+    } finally {
+      redirectServer?.close();
+    }
+
+    // Startup refuses rather than falling back to the request, because a
+    // fallback would reintroduce exactly what the fix removes.
+    process.env.FORCE_HTTPS = 'true';
+    delete process.env.PUBLIC_HOST;
+    let refusedMissing = false;
+    try { createApp(); } catch { refusedMissing = true; }
+    check('startup refuses when FORCE_HTTPS is set without a canonical host', refusedMissing);
+
+    process.env.PUBLIC_HOST = 'https://attacker.example/';
+    let refusedShape = false;
+    try { createApp(); } catch { refusedShape = true; }
+    check('a canonical host carrying a scheme or path is refused', refusedShape);
+
+    process.env.PUBLIC_HOST = `${REAL_HOST}:8443`;
+    let acceptedPort = true;
+    try { createApp(); } catch { acceptedPort = false; }
+    check('a canonical host with a port is accepted', acceptedPort);
+
+    if (savedForce === undefined) delete process.env.FORCE_HTTPS;
+    else process.env.FORCE_HTTPS = savedForce;
+    if (savedHost === undefined) delete process.env.PUBLIC_HOST;
+    else process.env.PUBLIC_HOST = savedHost;
   } finally {
     server.close();
     await closePool();
