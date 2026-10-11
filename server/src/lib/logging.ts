@@ -15,6 +15,18 @@ import { randomUUID } from 'node:crypto';
  */
 export const newErrorId = (): string => randomUUID();
 
+/**
+ * One log record is one line. A carriage return or line feed in the method,
+ * the path, or a database identifier would start a second record, which is
+ * how a log entry is forged.
+ *
+ * The pattern is an alternation rather than a character class because the
+ * log-injection query only treats a replacement of `\n` as sanitation.
+ */
+function oneLine(value: string): string {
+  return value.replace(/\n|\r/g, '');
+}
+
 export function logServerError(
   errorId: string,
   err: unknown,
@@ -22,12 +34,16 @@ export function logServerError(
   path: string,
 ): void {
   const e = err as Record<string, unknown> | null | undefined;
-  const fields = [`id=${errorId}`, `${method} ${path}`, `name=${String(e?.name ?? 'Error')}`];
+  const fields = [
+    `id=${oneLine(errorId)}`,
+    `${oneLine(method)} ${oneLine(path)}`,
+    `name=${oneLine(String(e?.name ?? 'Error'))}`,
+  ];
 
   // SQLSTATE, the constraint and the routine name locate the failure. None of
   // them carry row values.
   for (const key of ['code', 'constraint', 'routine'] as const) {
-    if (typeof e?.[key] === 'string') fields.push(`${key}=${e[key]}`);
+    if (typeof e?.[key] === 'string') fields.push(`${key}=${oneLine(e[key])}`);
   }
   console.error(`[error] ${fields.join(' ')}`);
 

@@ -11,6 +11,7 @@
 import { createApp } from '../index.js';
 import { anonQuery, closePool, withActor, type Actor } from '../lib/db.js';
 import { TLS_CIPHERS } from '../lib/https.js';
+import { logServerError } from '../lib/logging.js';
 import { hashPassword, isArgon2, needsRehash } from '../lib/passwords.js';
 import { throttleKey, MAX_FAILED_PER_ADDRESS as MAX_PER_ADDRESS } from '../routes/auth.js';
 import bcrypt from 'bcryptjs';
@@ -555,6 +556,38 @@ async function main() {
       body: '{ not json',
     });
     check('a malformed body returns 400, not 500', malformed.status === 400, malformed.status);
+
+    // A newline in the path or in a database identifier must not start a second
+    // log record. The identifiers themselves stay, or the line stops being useful.
+    const faultLines: string[] = [];
+    const writeError = console.error;
+    console.error = (...args: unknown[]) => {
+      faultLines.push(args.map((part) => String(part)).join(' '));
+    };
+    try {
+      logServerError(
+        'err-1',
+        {
+          name: 'QueryFailed\nFAKE ENTRY',
+          code: '23505',
+          constraint: 'user_email\rkey',
+          routine: 'ri_Trigger',
+        },
+        'POST',
+        '/api/auth/login\nFAKE ENTRY',
+      );
+    } finally {
+      console.error = writeError;
+    }
+    const logged = faultLines[0] ?? '';
+    check('a server fault stays on one log line', !/[\r\n]/.test(logged), logged);
+    check('the log line still names the fault',
+      logged.includes('id=err-1')
+        && logged.includes('POST /api/auth/loginFAKE ENTRY')
+        && logged.includes('code=23505')
+        && logged.includes('constraint=user_emailkey')
+        && logged.includes('routine=ri_Trigger'),
+      logged);
 
     // -----------------------------------------------------------------
     section('Transport security (NFR-SEC-001)');
