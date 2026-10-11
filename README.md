@@ -31,7 +31,7 @@ rasibe/
 │       ├── middleware/     session authentication and role guards
 │       ├── routes/         the twelve route modules
 │       ├── services/       notification queue and audit log
-│       ├── scripts/        one-off tools: backfill encryption, measure sign-in timing
+│       ├── scripts/        one-off tools: backfill encryption, sign-in timing, backup and restore
 │       └── test/           integration and end-to-end suites
 ├── web/                    React, Vite and TypeScript client
 │   └── src/
@@ -189,6 +189,7 @@ The sign-in screen lists these; click a row to fill the form in.
 cd server
 npm test                  # 195 integration assertions
 npx tsx src/test/e2e.ts   # 19 assertions over the screens the web client loads
+npm run test:backup       # 23 checks: back up, restore, verify (docs/BACKUP.md)
 ```
 
 ```bash
@@ -211,7 +212,7 @@ check is only a `NOTICE` and `psql` still exits 0, which is a false pass.
 
 ## Continuous integration
 
-Seven checks run on every pull request and on every push to `main`. CodeQL
+Eight checks run on every pull request and on every push to `main`. CodeQL
 also runs every Monday, because its query pack changes even when this
 repository does not. `docs/CI.md` explains what each one is for and, just as
 importantly, what none of them covers.
@@ -230,6 +231,7 @@ follow rather than something the repository guarantees.
 | Dependency audit (web) | A known flaw in something the client ships |
 | Web CI | A front end that no longer compiles for production |
 | CodeQL | A vulnerability pattern in the JavaScript or TypeScript |
+| Backup drill | A backup that no longer restores, or restores unreadable |
 
 The dependency audit blocks on high and critical advisories in production
 dependencies only. Development-only findings are reported but do not fail the
@@ -377,6 +379,7 @@ Security settings. Each is covered by a document in `docs/`.
 | --- | --- | --- |
 | `DATA_ENCRYPTION_KEY` | derived | Encrypts identity, banking and vetting values. **Losing it loses that data** |
 | `DATA_INDEX_KEY` | derived | Derives the fingerprint that keeps the identity number unique |
+| `PASSWORD_PEPPER` | derived | Secret mixed into every password hash. **Losing it means nobody can sign in** |
 | `CSRF_SECRET` | random at boot | Signs the token protecting state-changing requests |
 | `TLS_CERT_FILE`, `TLS_KEY_FILE` | unset | Serve HTTPS from this process. Leave unset where a proxy terminates TLS |
 | `FORCE_HTTPS` | unset | Redirect plain HTTP to HTTPS with a 308 |
@@ -385,10 +388,13 @@ Security settings. Each is covered by a document in `docs/`.
 | `PGSSLMODE`, `PGSSLROOTCERT` | disable | Encrypt the database connection. Hosted PostgreSQL needs at least `require` |
 
 Two of these have consequences worth stating plainly. With `NODE_ENV=production`
-the server **refuses to start** without `DATA_ENCRYPTION_KEY`, because the
-alternative is silently writing restricted data in clear. And the encryption key
-has to be backed up alongside the database but never inside it: a backup of the
-database without that key restores nothing readable.
+the server **refuses to start** without `DATA_ENCRYPTION_KEY`, `DATA_INDEX_KEY`
+or `PASSWORD_PEPPER`, because the alternative is silently writing data a stolen
+database is enough to read. And all three have to be backed up separately from
+the database, never inside it: a backup restored without them has unreadable
+identity and banking details and no password that verifies. `docs/BACKUP.md`
+covers taking a backup, restoring it, and how a restore checks it has the right
+keys.
 
 ---
 

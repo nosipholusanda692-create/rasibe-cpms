@@ -107,8 +107,9 @@ exact failure this ticket exists to prevent, and failing at boot is better than
 discovering it in a dump months later.
 
 Losing `DATA_ENCRYPTION_KEY` loses the data it protects. It belongs wherever the
-database password already lives, and it must be included in whatever RCP-16
-ends up defining as the backup.
+database password already lives, and it is part of the backup defined in
+`docs/BACKUP.md`. Every backup records a fingerprint of each key, and a restore
+checked with a different key fails rather than reporting success.
 
 ## Existing rows
 

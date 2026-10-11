@@ -47,8 +47,9 @@ pepper later. There are three stored forms:
 
 **Losing the pepper loses every password.** No peppered hash verifies without
 it, and there is no recovery short of resetting every account. It has to be
-backed up with `DATA_ENCRYPTION_KEY`, in the place RCP-16 defines, not in the
-database it protects.
+backed up with `DATA_ENCRYPTION_KEY`, not in the database it protects.
+`docs/BACKUP.md` records its fingerprint with every backup and refuses a
+restore checked with a different pepper.
 
 Rotation is not built. A second pepper would be `$pepper-v2`, and both would
 have to be loaded until every account had signed in once.
