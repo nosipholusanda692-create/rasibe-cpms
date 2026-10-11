@@ -13,7 +13,11 @@ import { anonQuery, closePool, withActor, type Actor } from '../lib/db.js';
 import { TLS_CIPHERS } from '../lib/https.js';
 import { bankAccountRef, isValidSaIdNumber, saIdNumber } from '../lib/identity.js';
 import { logServerError } from '../lib/logging.js';
-import { hashPassword, isArgon2, needsRehash } from '../lib/passwords.js';
+import {
+  hashPassword, isArgon2, isPeppered, needsRehash, PASSWORD_OPTIONS, PEPPER_MARK, verifyPassword,
+} from '../lib/passwords.js';
+import { hash as argon2Hash, verify as argon2Verify } from '@node-rs/argon2';
+import { createHash } from 'node:crypto';
 import { throttleKey, MAX_FAILED_PER_ADDRESS as MAX_PER_ADDRESS } from '../routes/auth.js';
 import bcrypt from 'bcryptjs';
 import http, { type Server } from 'node:http';
@@ -1138,7 +1142,7 @@ async function main() {
     const legacyHash = bcrypt.hashSync('Password123!', 10);
     check('a bcrypt hash is due for rewriting', needsRehash(legacyHash), legacyHash.slice(0, 7));
     const fresh = await hashPassword('Password123!');
-    check('a new hash is Argon2id', fresh.startsWith('$argon2id$'), fresh.slice(0, 30));
+    check('a new hash is Argon2id', fresh.startsWith(`${PEPPER_MARK}$argon2id$`), fresh.slice(0, 30));
     check('a hash at the current parameters is not rewritten again', !needsRehash(fresh));
 
     await anonQuery(
@@ -1179,6 +1183,111 @@ async function main() {
       email: legacyEmail, password: 'Password123!',
     });
     check('the rewritten hash signs in on its own', again.status === 200, again.status);
+    await clearAttempts();
+
+    // -----------------------------------------------------------------
+    section('Password pepper');
+    // -----------------------------------------------------------------
+    // The claim is that the database alone is not enough. Strip the marker and
+    // check the Argon2 string the way someone holding only a dump would.
+    check('the correct password verifies against a peppered hash',
+      await verifyPassword('Password123!', fresh));
+    check('the stored hash does not verify without the pepper',
+      !(await argon2Verify(fresh.slice(PEPPER_MARK.length), 'Password123!')));
+
+    // Accounts that moved to Argon2id under RCP-11 have no pepper. They must
+    // still sign in, and that sign-in has to bring them up to date.
+    const unpeppered = await argon2Hash('Password123!', PASSWORD_OPTIONS);
+    check('an Argon2id hash without the pepper is due for rewriting', needsRehash(unpeppered));
+    const pepperEmail = 'pepper.upgrade@example.co.za';
+    await anonQuery(
+      `INSERT INTO app_user (email, full_name, password_hash) VALUES ($1, $2, $3)`,
+      [pepperEmail, 'Pepper Upgrade', unpeppered],
+    );
+    const pepperLogin = await new Client('pepper').post('/auth/login', {
+      email: pepperEmail, password: 'Password123!',
+    });
+    const pepperRows = await anonQuery<{ password_hash: string }>(
+      `SELECT password_hash FROM app_user WHERE email = $1`,
+      [pepperEmail],
+    );
+    check('an account without the pepper still signs in',
+      pepperLogin.status === 200, pepperLogin.status);
+    check('that sign-in adds the pepper',
+      isPeppered(pepperRows[0]?.password_hash ?? ''), pepperRows[0]?.password_hash?.slice(0, 20));
+    await clearAttempts();
+
+    // -----------------------------------------------------------------
+    section('Breached passwords');
+    // -----------------------------------------------------------------
+    // A stand-in for the range API, so the suite neither depends on the
+    // network nor sends anything to a third party. It records what it is
+    // asked, which is the half of the claim about what leaves the server.
+    const BREACHED = 'Summer2024Password';
+    const breachedDigest = createHash('sha1').update(BREACHED).digest('hex').toUpperCase();
+    const rangeRequests: string[] = [];
+    let rangeAvailable = true;
+    const rangeServer = http.createServer((rq, rs) => {
+      rangeRequests.push(rq.url ?? '');
+      if (!rangeAvailable) { rs.writeHead(503); rs.end(); return; }
+      const prefix = (rq.url ?? '').split('/').pop() ?? '';
+      const lines = ['0000000000000000000000000000000000A:0'];
+      if (prefix === breachedDigest.slice(0, 5)) lines.push(`${breachedDigest.slice(5)}:52`);
+      rs.writeHead(200, { 'Content-Type': 'text/plain' });
+      rs.end(lines.join('\r\n'));
+    });
+    await new Promise<void>((resolve) => rangeServer.listen(0, '127.0.0.1', () => resolve()));
+    const rangePort = (rangeServer.address() as { port: number }).port;
+    const savedRangeUrl = process.env.PWNED_PASSWORDS_URL;
+    process.env.PWNED_PASSWORDS_URL = `http://127.0.0.1:${rangePort}/range/`;
+
+    try {
+      const breachEmail = 'breach.check@example.co.za';
+      // Signed-in requests need a role; the middleware joins on it.
+      await anonQuery(
+        `WITH u AS (
+           INSERT INTO app_user (email, full_name, password_hash) VALUES ($1, $2, $3)
+           RETURNING user_id)
+         INSERT INTO user_role (user_id, role) SELECT user_id, 'RECRUITER' FROM u`,
+        [breachEmail, 'Breach Check', await hashPassword('Password123!')],
+      );
+      const changer = new Client('changer');
+      await changer.post('/auth/login', { email: breachEmail, password: 'Password123!' });
+
+      const refusedChange = await changer.post('/auth/change-password', {
+        currentPassword: 'Password123!', newPassword: BREACHED,
+      });
+      check('a password found in a breach is refused',
+        refusedChange.status === 400 && refusedChange.body.detail?.newPassword !== undefined,
+        refusedChange.body);
+      check('only the first five characters of the hash leave the server',
+        rangeRequests.length > 0
+          && rangeRequests.every((u) => /^\/range\/[0-9A-F]{5}$/.test(u))
+          && rangeRequests.every((u) => !u.includes(breachedDigest.slice(5))),
+        rangeRequests);
+
+      const CLEAR = 'Fixture-Clear-2026x';
+      const acceptedChange = await changer.post('/auth/change-password', {
+        currentPassword: 'Password123!', newPassword: CLEAR,
+      });
+      check('a password not found in a breach is accepted',
+        acceptedChange.status === 200, acceptedChange.body);
+      const withNew = await new Client('changed').post('/auth/login', {
+        email: breachEmail, password: CLEAR,
+      });
+      check('the new password signs in', withNew.status === 200, withNew.status);
+
+      rangeAvailable = false;
+      const whileDown = await changer.post('/auth/change-password', {
+        currentPassword: CLEAR, newPassword: 'Fixture-Clear-2026y',
+      });
+      check('a password change is not blocked while the breach service is down',
+        whileDown.status === 200, whileDown.body);
+    } finally {
+      if (savedRangeUrl === undefined) delete process.env.PWNED_PASSWORDS_URL;
+      else process.env.PWNED_PASSWORDS_URL = savedRangeUrl;
+      rangeServer.close();
+    }
     await clearAttempts();
 
     // -----------------------------------------------------------------

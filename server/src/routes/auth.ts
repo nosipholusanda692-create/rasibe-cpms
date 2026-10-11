@@ -3,6 +3,7 @@ import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
 import { anonQuery, query, withActor } from '../lib/db.js';
 import { badRequest, unauthorised, AppError } from '../lib/errors.js';
+import { checkBreached } from '../lib/breached.js';
 import { hashPassword, needsRehash, spendDecoyComparison, verifyPassword } from '../lib/passwords.js';
 import { SESSION_COOKIE, requireAuth } from '../middleware/auth.js';
 import { CSRF_COOKIE, csrfCookieOptions, tokenFor } from '../lib/csrf.js';
@@ -219,8 +220,8 @@ authRouter.post('/login', loginLimiter, async (req, res, next) => {
       throw unauthorised('Email address or password is incorrect');
     }
 
-    // A bcrypt hash, or an Argon2id hash written at older parameters, is
-    // rewritten now because this is the only moment the password itself is
+    // A bcrypt hash, an Argon2id hash without the pepper, or one written at
+    // older parameters, is rewritten now because this is the only moment the password itself is
     // known. A wrong password cannot do it: there is nothing to rewrite it to.
     if (needsRehash(user.password_hash)) {
       const upgraded = await hashPassword(password);
@@ -362,6 +363,18 @@ authRouter.post('/change-password', requireAuth, async (req, res, next) => {
     const parsed = schema.safeParse(req.body);
     if (!parsed.success) {
       throw badRequest('Check the details you entered', parsed.error.flatten().fieldErrors);
+    }
+
+    // Checked before the transaction opens, so a slow lookup does not hold a
+    // database connection while it waits.
+    const breach = await checkBreached(parsed.data.newPassword);
+    if (breach === 'breached') {
+      throw badRequest('Check the details you entered', {
+        newPassword: ['This password has appeared in a data breach. Choose a different one.'],
+      });
+    }
+    if (breach === 'unknown') {
+      console.warn('[warn] breached-password check unavailable; password change allowed');
     }
 
     await withActor(req.actor!, async (c) => {

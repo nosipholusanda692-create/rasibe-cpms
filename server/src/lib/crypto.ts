@@ -39,7 +39,7 @@ function parseKey(raw: string, name: string): Buffer {
   return key;
 }
 
-function loadKey(name: string, purpose: string): Buffer {
+export function loadKey(name: string, purpose: string): Buffer {
   const raw = process.env[name];
   if (raw) return parseKey(raw, name);
   if (process.env.NODE_ENV === 'production') {
