@@ -931,8 +931,14 @@ async function main() {
     check('an unknown address is refused in the same time as a wrong password',
       drift < 0.35, { knownMs: knownMs.toFixed(1), unknownMs: unknownMs.toFixed(1),
                       drift: drift.toFixed(3) });
+    // A fixed floor of 20ms was right when the hash was bcrypt at cost 10, which
+    // took about 130ms. Argon2id at these parameters took 14.5ms on the CI
+    // runner, under that floor, while still matching the known-address path.
+    // Comparing with the known path keeps the original meaning: the unknown
+    // address must not be answered by skipping the hash.
     check('the refusal for an unknown address is not a fast path',
-      unknownMs > 20, unknownMs.toFixed(1));
+      unknownMs > knownMs * 0.5,
+      { unknownMs: unknownMs.toFixed(1), knownMs: knownMs.toFixed(1) });
 
     const unknownRefusal = await timer.post('/auth/login', {
       email: 'nobody.at.all@example.co.za', password: 'DefinitelyNotThePassword!',

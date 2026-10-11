@@ -108,6 +108,9 @@ const LANDING: Record<string, string> = {
   CLIENT_MANAGER: '/approvals',
 };
 
+// The limit is the per-address count against login_attempt below (RCP-10).
+// This query only recognises express-rate-limit and three other packages.
+// codeql[js/missing-rate-limiting] custom throttle, not one of the packages the query models
 authRouter.post('/login', async (req, res, next) => {
   try {
     const parsed = credentials.safeParse(req.body);
