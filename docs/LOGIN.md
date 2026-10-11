@@ -54,8 +54,13 @@ After the change, on the same machine:
 
 Seven milliseconds apart, with the ranges overlapping heavily.
 
-The cost factor used for the decoy has to stay level with the cost used for
-real passwords, or the two paths drift apart again. Both are 10.
+The decoy has to stay level with the check used for a real password, or the
+two paths drift apart again. Both are now Argon2id at the same parameters
+(RCP-11). An account that has not yet signed in since that change is still
+bcrypt, and its wrong-password check does not match the decoy until the next
+successful sign-in rewrites it. The seeded demonstration accounts are moved
+across before this suite measures them, so the measurement is of the steady
+state.
 
 ## The residual
 

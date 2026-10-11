@@ -1,9 +1,8 @@
 import { Router } from 'express';
-import bcrypt from 'bcryptjs';
-import { randomBytes } from 'node:crypto';
 import { z } from 'zod';
 import { anonQuery, query, withActor } from '../lib/db.js';
 import { badRequest, unauthorised, AppError } from '../lib/errors.js';
+import { hashPassword, needsRehash, spendDecoyComparison, verifyPassword } from '../lib/passwords.js';
 import { SESSION_COOKIE, requireAuth } from '../middleware/auth.js';
 import { CSRF_COOKIE, csrfCookieOptions, tokenFor } from '../lib/csrf.js';
 
@@ -88,30 +87,12 @@ export function throttleKey(ip: string | null | undefined): string | null {
 }
 
 /**
- * NFR-SEC-004 on the sign-in form. Verifying a password is deliberately slow,
- * so skipping it when the address is unknown made the two refusals trivially
- * distinguishable: measured on this code before the change, a wrong password
- * took 146 ms and an unknown address 12 ms, with no overlap between them. One
- * request per address was enough to decide whether an account existed, and the
- * identical wording of the two messages counted for nothing.
- *
- * So every refusal now does the same work. This hash is never matched by any
- * password: it is built at startup from random bytes nobody keeps, and exists
- * only to be compared against.
- *
- * The cost must stay level with the cost used for real passwords, or the two
- * paths drift apart again. Both are 10.
- */
-const BCRYPT_COST = 10;
-const DECOY_HASH = bcrypt.hashSync(randomBytes(32).toString('hex'), BCRYPT_COST);
-
-/**
- * Spends the time a password check would have taken, and discards the answer.
- * Called where there is nothing to check, so that nothing can be read from how
- * quickly the refusal comes back.
+ * NFR-SEC-004. An unknown address has no hash to check, so a check is spent
+ * anyway, against a decoy. The decoy is Argon2id at the same parameters as a
+ * real password. See `lib/passwords.ts`.
  */
 async function spendComparisonTime(password: string): Promise<void> {
-  await bcrypt.compare(password, DECOY_HASH);
+  await spendDecoyComparison(password);
 }
 
 const credentials = z.object({
@@ -201,7 +182,7 @@ authRouter.post('/login', async (req, res, next) => {
       throw new AppError(423, 'This account is temporarily locked. Try again shortly.', 'locked');
     }
 
-    const ok = await bcrypt.compare(password, user.password_hash);
+    const ok = await verifyPassword(password, user.password_hash);
     if (!ok) {
       const failed = (user.failed_logins ?? 0) + 1;
       await anonQuery(
@@ -215,6 +196,17 @@ authRouter.post('/login', async (req, res, next) => {
       );
       await record(false);
       throw unauthorised('Email address or password is incorrect');
+    }
+
+    // A bcrypt hash, or an Argon2id hash written at older parameters, is
+    // rewritten now because this is the only moment the password itself is
+    // known. A wrong password cannot do it: there is nothing to rewrite it to.
+    if (needsRehash(user.password_hash)) {
+      const upgraded = await hashPassword(password);
+      await anonQuery(`UPDATE app_user SET password_hash = $2 WHERE user_id = $1`, [
+        user.user_id,
+        upgraded,
+      ]);
     }
 
     // NFR-SEC-010. Signing in is the one privilege change this system has, and
@@ -355,10 +347,10 @@ authRouter.post('/change-password', requireAuth, async (req, res, next) => {
       const cur = await c.query(`SELECT password_hash FROM app_user WHERE user_id = $1`, [
         req.actor!.userId,
       ]);
-      const ok = await bcrypt.compare(parsed.data.currentPassword, cur.rows[0].password_hash);
+      const ok = await verifyPassword(parsed.data.currentPassword, cur.rows[0].password_hash);
       if (!ok) throw unauthorised('Your current password is incorrect');
 
-      const hash = await bcrypt.hash(parsed.data.newPassword, 10);
+      const hash = await hashPassword(parsed.data.newPassword);
       await c.query(`UPDATE app_user SET password_hash = $2 WHERE user_id = $1`, [
         req.actor!.userId,
         hash,

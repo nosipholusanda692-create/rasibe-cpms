@@ -11,7 +11,9 @@
 import { createApp } from '../index.js';
 import { anonQuery, closePool, withActor, type Actor } from '../lib/db.js';
 import { TLS_CIPHERS } from '../lib/https.js';
+import { hashPassword, isArgon2, needsRehash } from '../lib/passwords.js';
 import { throttleKey, MAX_FAILED_PER_ADDRESS as MAX_PER_ADDRESS } from '../routes/auth.js';
+import bcrypt from 'bcryptjs';
 import http, { type Server } from 'node:http';
 
 const PORT = Number(process.env.TEST_PORT ?? 4100);
@@ -871,6 +873,22 @@ async function main() {
     const clearAttempts = () => anonQuery(`DELETE FROM login_attempt`);
     await clearAttempts();
 
+    // The seeded hash is bcrypt. A wrong password does not rewrite it, so this
+    // account would still be checked with bcrypt while an unknown address is
+    // checked with the Argon2id decoy, and the two times would not mean the
+    // same thing. Move it to the steady state first. The rewrite that sign-in
+    // itself performs is asserted separately, below.
+    const spareRows = await anonQuery<{ user_id: string; password_hash: string }>(
+      `SELECT user_id, password_hash FROM app_user WHERE lower(email) = lower($1)`,
+      [SPARE],
+    );
+    if (spareRows[0] && needsRehash(spareRows[0].password_hash)) {
+      await anonQuery(`UPDATE app_user SET password_hash = $2 WHERE user_id = $1`, [
+        spareRows[0].user_id,
+        await hashPassword('Password123!'),
+      ]);
+    }
+
     const clearLock = (email: string) =>
       anonQuery(
         `UPDATE app_user SET failed_logins = 0, locked_until = NULL WHERE lower(email) = lower($1)`,
@@ -1020,6 +1038,56 @@ async function main() {
     else process.env.FORCE_HTTPS = savedForce;
     if (savedHost === undefined) delete process.env.PUBLIC_HOST;
     else process.env.PUBLIC_HOST = savedHost;
+
+    // -----------------------------------------------------------------
+    section('Password hashing (RCP-11)');
+    // -----------------------------------------------------------------
+    const legacyEmail = 'argon2.upgrade@example.co.za';
+    const legacyHash = bcrypt.hashSync('Password123!', 10);
+    check('a bcrypt hash is due for rewriting', needsRehash(legacyHash), legacyHash.slice(0, 7));
+    const fresh = await hashPassword('Password123!');
+    check('a new hash is Argon2id', fresh.startsWith('$argon2id$'), fresh.slice(0, 30));
+    check('a hash at the current parameters is not rewritten again', !needsRehash(fresh));
+
+    await anonQuery(
+      `INSERT INTO app_user (email, full_name, password_hash) VALUES ($1, $2, $3)`,
+      [legacyEmail, 'Argon Upgrade', legacyHash],
+    );
+    const storedBefore = await anonQuery<{ password_hash: string }>(
+      `SELECT password_hash FROM app_user WHERE email = $1`,
+      [legacyEmail],
+    );
+    const legacyClient = new Client('legacy');
+    const legacyWrong = await legacyClient.post('/auth/login', {
+      email: legacyEmail, password: 'DefinitelyNotThePassword!',
+    });
+    const afterWrong = await anonQuery<{ password_hash: string }>(
+      `SELECT password_hash FROM app_user WHERE email = $1`,
+      [legacyEmail],
+    );
+    check('a wrong password against a bcrypt account is refused',
+      legacyWrong.status === 401, legacyWrong.status);
+    check('a wrong password does not rewrite the stored hash',
+      afterWrong[0]?.password_hash === storedBefore[0]?.password_hash);
+
+    const legacyRight = await legacyClient.post('/auth/login', {
+      email: legacyEmail, password: 'Password123!',
+    });
+    const afterRight = await anonQuery<{ password_hash: string }>(
+      `SELECT password_hash FROM app_user WHERE email = $1`,
+      [legacyEmail],
+    );
+    check('the correct password still signs a bcrypt account in',
+      legacyRight.status === 200, legacyRight.status);
+    check('that sign-in rewrites the hash as Argon2id',
+      isArgon2(afterRight[0]?.password_hash ?? '') && needsRehash(afterRight[0]?.password_hash ?? '') === false,
+      afterRight[0]?.password_hash?.slice(0, 40));
+
+    const again = await new Client('legacy again').post('/auth/login', {
+      email: legacyEmail, password: 'Password123!',
+    });
+    check('the rewritten hash signs in on its own', again.status === 200, again.status);
+    await clearAttempts();
 
     // -----------------------------------------------------------------
     section('Per-address throttle (FR-AUT-009)');
