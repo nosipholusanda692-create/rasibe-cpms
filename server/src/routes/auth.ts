@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
 import { anonQuery, query, withActor } from '../lib/db.js';
 import { badRequest, unauthorised, AppError } from '../lib/errors.js';
@@ -48,6 +49,26 @@ const LOCK_MINUTES = 15;
  */
 export const MAX_FAILED_PER_ADDRESS = 20;
 const ADDRESS_WINDOW_MINUTES = 15;
+
+/**
+ * A second cap, on every sign-in request rather than on failures.
+ *
+ * The failure count below is the control that stops password spraying, and it
+ * is the one the suite asserts. This one exists because a scanner cannot see a
+ * limit written as a query: `js/missing-rate-limiting` only recognises
+ * express-rate-limit and three other packages, so without this middleware it
+ * reports the route as unlimited. A hundred requests in the same window is
+ * enough for a client site signing in together and far below what a script can
+ * send. The suite is exempt, because it deliberately fails dozens of times
+ * from one address in order to measure the failure count.
+ */
+const loginLimiter = rateLimit({
+  windowMs: ADDRESS_WINDOW_MINUTES * 60 * 1000,
+  max: 100,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: () => process.env.NODE_ENV === 'test',
+});
 
 /**
  * The unit the throttle counts against.
@@ -108,10 +129,7 @@ const LANDING: Record<string, string> = {
   CLIENT_MANAGER: '/approvals',
 };
 
-// The limit is the per-address count against login_attempt below (RCP-10).
-// This query only recognises express-rate-limit and three other packages.
-// codeql[js/missing-rate-limiting] custom throttle, not one of the packages the query models
-authRouter.post('/login', async (req, res, next) => {
+authRouter.post('/login', loginLimiter, async (req, res, next) => {
   try {
     const parsed = credentials.safeParse(req.body);
     if (!parsed.success) {
