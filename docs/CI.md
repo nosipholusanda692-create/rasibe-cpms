@@ -5,7 +5,7 @@ own right.
 
 ## What runs
 
-Six workflows. Five run on every pull request and on every push to `main`.
+Seven workflows. Six run on every pull request and on every push to `main`.
 CodeQL does those as well, and also runs every Monday, because its query pack
 changes even when this repository does not.
 
@@ -17,9 +17,13 @@ changes even when this repository does not.
 | Dependency audit | `audit` (server, web) | A known flaw in something we ship |
 | Web CI | `build` | A front end that no longer compiles |
 | CodeQL | `analyze` | A vulnerability pattern in the JavaScript or TypeScript |
+| Backup drill | `backup-drill` | A backup that no longer restores, or restores unreadable |
 
 The first three predate RCP-17. The dependency audit and the web build arrived
-with it. CodeQL arrived with RCP-18, once the repository was public.
+with it. CodeQL arrived with RCP-18, once the repository was public. The backup
+drill arrived with RCP-16 and is described in `docs/BACKUP.md`: it backs up a
+seeded database, restores it, and fails if the copy is not readable with the
+right keys or is readable with the wrong ones.
 
 ## Dependency audit
 
