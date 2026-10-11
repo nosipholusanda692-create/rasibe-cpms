@@ -816,7 +816,7 @@ async function main() {
       typeof stored.vetting_status === 'string' && stored.vetting_status.startsWith('v1:'),
       stored.vetting_status);
     check('the identity number is not recoverable from the stored value',
-      !String(stored.id_number).includes('9107045000000'));
+      !String(stored.id_number).includes('9107045000084'));
 
     // The backfill is a migration, and a migration that half ran is worse than
     // one that did not. Nothing in clear may survive it.
@@ -834,7 +834,7 @@ async function main() {
 
     const readBack = await admin.get(`/consultants/${c.user.consultantId}`);
     check('the administrator still reads the identity number as text',
-      readBack.body.id_number === '9107045000000', readBack.body.id_number);
+      readBack.body.id_number === '9107045000084', readBack.body.id_number);
     check('the blind index is never sent to the client',
       readBack.body.id_number_bidx === undefined);
 

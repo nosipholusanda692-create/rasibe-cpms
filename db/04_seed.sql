@@ -136,11 +136,11 @@ INSERT INTO consultant (consultant_id, user_id, full_name, preferred_name, id_nu
                         availability, available_from, min_pay_rate, preferred_pay_rate,
                         vetting_status, vetting_cleared_on, bank_name, bank_account_ref,
                         consent_recorded_at, retention_expires_on) VALUES
- ('f0000001-0000-0000-0000-000000000001','b0000001-0000-0000-0000-000000000003','Thabo Sipho Mokoena','Thabo','9107045000000','1991-07-04','thabo.m@example.co.za','+27 82 000 0003',
+ ('f0000001-0000-0000-0000-000000000001','b0000001-0000-0000-0000-000000000003','Thabo Sipho Mokoena','Thabo','9107045000084','1991-07-04','thabo.m@example.co.za','+27 82 000 0003',
   'Midrand, Gauteng','South African','Citizen — no permit required','SENIOR',
   'Senior Java developer specialising in enterprise microservices and event-driven systems',9,
   'ON_PLACEMENT','2026-09-12',560,620,'Cleared','2026-03-11','FNB','****4417', now(), '2027-08-31'),
- ('f0000001-0000-0000-0000-000000000002','b0000001-0000-0000-0000-000000000006','Liesl van Wyk','Liesl','8804125000000','1988-04-12','l.vanwyk@example.co.za','+27 82 000 0006',
+ ('f0000001-0000-0000-0000-000000000002','b0000001-0000-0000-0000-000000000006','Liesl van Wyk','Liesl','8804125000080','1988-04-12','l.vanwyk@example.co.za','+27 82 000 0006',
   'Bellville, Western Cape','South African','Citizen — no permit required','INTERMEDIATE',
   'Test analyst with strong automation and regression experience',7,
   'ON_PLACEMENT',NULL,480,540,'Cleared','2026-02-20','Standard Bank','****9902', now(), '2027-08-31'),

@@ -18,7 +18,7 @@ Spaces and hyphens are removed first. That is the same normalisation as the blin
 
 A passport is not an identity number. The field stays optional: leave it out rather than inventing a format for every other document.
 
-Seeded identity numbers are not rechecked on read. `9107045000000` and `8804125000000` were written by `db/04_seed.sql` before this rule, and they are still returned as stored. A new write, or an edit, has to pass.
+The rule is applied when a number is written, not when it is read. The two seeded numbers in `db/04_seed.sql`, `9107045000084` and `8804125000080`, are synthetic and pass it: their dates match the seeded dates of birth and their check digits are valid. A database built before this change holds numbers that fail. They are still returned as stored, and an edit to that field has to supply a valid one.
 
 ## Bank account reference
 
