@@ -5,18 +5,21 @@ own right.
 
 ## What runs
 
-Five workflows, all on every pull request and on every push to `main`.
+Six workflows. Five run on every pull request and on every push to `main`.
+CodeQL does those as well, and also runs every Monday, because its query pack
+changes even when this repository does not.
 
 | Workflow | Job | What it would catch |
 | --- | --- | --- |
-| Server CI | `server` | A regression in any of the 132 behavioural checks |
+| Server CI | `server` | A regression in any of the 162 behavioural checks |
 | Database tests | `db-tests` | A row-level security policy that stops holding |
 | Secret scan | `gitleaks` | A credential committed to history |
 | Dependency audit | `audit` (server, web) | A known flaw in something we ship |
 | Web CI | `build` | A front end that no longer compiles |
+| CodeQL | `analyze` | A vulnerability pattern in the JavaScript or TypeScript |
 
-The first three predate this ticket. The last two are new, and the reason for
-each is below.
+The first three predate RCP-17. The dependency audit and the web build arrived
+with it. CodeQL arrived with RCP-18, once the repository was public.
 
 ## Dependency audit
 
@@ -53,18 +56,39 @@ tests the API, but nothing in the pipeline compiled the front end at all, so a
 change that broke the production build could reach `main` with every check
 green. It now runs on every pull request.
 
-## What this does not cover
+## CodeQL
 
-**No static analysis.** The reference pipeline this was compared against runs
-CodeQL. CodeQL's code scanning is free on public repositories; on a private one
-it requires GitHub Code Security, a paid add-on. This repository is private, so
-the upload step would fail. It is deferred rather than abandoned — see the note
-below.
+RCP-18. The repository went public on 7 October, which is what made this
+possible: code scanning is free on a public repository and needs the paid
+GitHub Code Security add-on on a private one. While the repository was private
+the upload step would have failed, so the job was not added until the
+visibility changed.
+
+It analyses `server/` and `web/` together as one JavaScript and TypeScript
+codebase, using the `security-extended` query suite. That is the default
+security queries plus the lower-severity ones. The `security-and-quality` suite
+was not taken, because the queries it adds are about maintainability, and
+mixing those into the Security tab is how a security report stops being read.
+
+The job goes red when the analysis itself cannot run. A finding does not, on
+its own, fail the check: it is uploaded to the repository's Security tab.
+Turning findings into a merge block is a branch-protection setting, and `main`
+does not have one. Until it does, CodeQL is evidence rather than a gate, which
+is the same position the other five checks are already in.
+
+`build-mode: none` is deliberate. CodeQL's build tracing is for languages it
+has to compile to see. This API is executed by `tsx` and the client is bundled
+by Vite, so the source is the artefact.
+
+## What this does not cover
 
 **No dynamic analysis.** Nothing in the pipeline starts the application and
 attacks it over HTTP the way an OWASP ZAP baseline scan would. The server suite
 exercises the API thoroughly, but it asserts the behaviour we thought to write
 down; a baseline scan looks for the categories of problem nobody thought about.
+The headers a baseline scan would have reported are now asserted directly by
+the server suite, which is recorded in `docs/HEADERS.md` and is not a
+substitute for dynamic analysis.
 
 **The audit blocks on severity, not on exploitability.** A high-severity
 advisory in a dependency we use in a way the advisory does not describe will
@@ -82,9 +106,6 @@ recorded here rather than taken.
 behaves; it does not prove that what runs in production is what the pipeline
 checked.
 
-## Deferred
-
-CodeQL analysis for JavaScript and TypeScript across both projects, pending a
-decision on making the repository public. If it stays private, the realistic
-substitute is ESLint with the security plugins, which costs nothing and runs
-anywhere, and which the reference pipeline also runs alongside CodeQL.
+**CodeQL does not replace the suite.** It looks for patterns its queries know
+about. It does not know that a consultant must not see a bill rate, or that a
+forged `Host` header must not choose a redirect. Those stay assertions.

@@ -41,7 +41,7 @@ rasibe/
 │       └── pages/          one module per screen
 ├── docs/                   how each security control works, and what it does not cover
 ├── scripts/                development certificate generation
-├── .github/workflows/      the six checks that run on every pull request
+├── .github/workflows/      the checks that run on every pull request
 ├── .gitleaks.toml          secret scanning configuration
 └── README.md
 ```
@@ -211,9 +211,10 @@ check is only a `NOTICE` and `psql` still exits 0, which is a false pass.
 
 ## Continuous integration
 
-Six checks run on every pull request and on every push to `main`. `docs/CI.md`
-explains what each one is for and, just as importantly, what none of them
-covers.
+Seven checks run on every pull request and on every push to `main`. CodeQL
+also runs every Monday, because its query pack changes even when this
+repository does not. `docs/CI.md` explains what each one is for and, just as
+importantly, what none of them covers.
 
 They are not yet enforced. `main` has no branch protection rule, so a pull
 request can be merged with a check failing and a commit can be pushed to `main`
@@ -228,12 +229,18 @@ follow rather than something the repository guarantees.
 | Dependency audit (server) | A known flaw in something the API ships |
 | Dependency audit (web) | A known flaw in something the client ships |
 | Web CI | A front end that no longer compiles for production |
+| CodeQL | A vulnerability pattern in the JavaScript or TypeScript |
 
 The dependency audit blocks on high and critical advisories in production
 dependencies only. Development-only findings are reported but do not fail the
 build, because a flaw in a bundler runs on the CI runner rather than reaching a
 user, and a check that goes red for things nobody can act on is a check
 everybody learns to ignore.
+
+CodeQL is the same shape in a different place. The job fails if the analysis
+cannot run. A finding does not fail it: the result is uploaded to the
+repository Security tab. Making either of those a merge requirement is the
+branch-protection setting described above.
 
 ---
 
