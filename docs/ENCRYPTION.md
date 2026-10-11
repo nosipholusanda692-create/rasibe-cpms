@@ -87,8 +87,9 @@ read path anywhere else had to change — not the routes, not the front end.
 
 The write path could not be as contained. `consultants.ts` names `id_number` in
 an `INSERT` column list and in the `PATCH` field map, so both encrypt the value
-and set the fingerprint beside it. Banking and vetting are never written through
-the API, only read, so they needed nothing.
+and set the fingerprint beside it. The value is checked first: thirteen digits,
+a real date of birth, and a Luhn check digit (`docs/IDENTITY.md`). Banking and
+vetting are never written through the API, only read, so they needed nothing.
 
 ## Settings
 
