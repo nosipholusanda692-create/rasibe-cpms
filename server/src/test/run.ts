@@ -11,6 +11,7 @@
 import { createApp } from '../index.js';
 import { anonQuery, closePool, withActor, type Actor } from '../lib/db.js';
 import { TLS_CIPHERS } from '../lib/https.js';
+import { bankAccountRef, isValidSaIdNumber, saIdNumber } from '../lib/identity.js';
 import { logServerError } from '../lib/logging.js';
 import { hashPassword, isArgon2, needsRehash } from '../lib/passwords.js';
 import { throttleKey, MAX_FAILED_PER_ADDRESS as MAX_PER_ADDRESS } from '../routes/auth.js';
@@ -815,7 +816,7 @@ async function main() {
       typeof stored.vetting_status === 'string' && stored.vetting_status.startsWith('v1:'),
       stored.vetting_status);
     check('the identity number is not recoverable from the stored value',
-      !String(stored.id_number).includes('9107045000000'));
+      !String(stored.id_number).includes('9107045000084'));
 
     // The backfill is a migration, and a migration that half ran is worse than
     // one that did not. Nothing in clear may survive it.
@@ -833,20 +834,20 @@ async function main() {
 
     const readBack = await admin.get(`/consultants/${c.user.consultantId}`);
     check('the administrator still reads the identity number as text',
-      readBack.body.id_number === '9107045000000', readBack.body.id_number);
+      readBack.body.id_number === '9107045000084', readBack.body.id_number);
     check('the blind index is never sent to the client',
       readBack.body.id_number_bidx === undefined);
 
     // Uniqueness has to survive the move onto the fingerprint, or two records
     // for one person become possible and nothing would notice.
     const firstNew = await admin.post('/consultants', {
-      fullName: 'Fixture One', email: 'fixture.one@example.co.za', idNumber: '9001015800085',
+      fullName: 'Fixture One', email: 'fixture.one@example.co.za', idNumber: '9001015800088',
     });
     check('a consultant with an identity number can be created',
       firstNew.status === 201, firstNew.body);
 
     const duplicateId = await admin.post('/consultants', {
-      fullName: 'Fixture Two', email: 'fixture.two@example.co.za', idNumber: '9001015800085',
+      fullName: 'Fixture Two', email: 'fixture.two@example.co.za', idNumber: '9001015800088',
     });
     check('a duplicate identity number is still refused',
       duplicateId.status === 409, duplicateId.status);
@@ -858,7 +859,7 @@ async function main() {
     // person, and the fingerprint has to agree even though the text differs.
     const spaced = await admin.post('/consultants', {
       fullName: 'Fixture Three', email: 'fixture.three@example.co.za',
-      idNumber: '900101 5800 085',
+      idNumber: '900101 5800 088',
     });
     check('the same identity number spaced differently still collides',
       spaced.status === 409, spaced.status);
@@ -869,15 +870,15 @@ async function main() {
         [createdId])).rows[0],
     );
     check('a value written through the API is encrypted, not stored as typed',
-      storedNew.id_number.startsWith('v1:') && !storedNew.id_number.includes('9001015800085'));
+      storedNew.id_number.startsWith('v1:') && !storedNew.id_number.includes('9001015800088'));
     check('the blind index is recorded alongside it',
       typeof storedNew.id_number_bidx === 'string' && storedNew.id_number_bidx.length === 64);
 
     // Editing has its own path through the route, and it has to keep the pair
     // in step. A stale fingerprint would let the old number be reused.
-    const edited = await admin.patch(`/consultants/${createdId}`, { idNumber: '9202025800086' });
+    const edited = await admin.patch(`/consultants/${createdId}`, { idNumber: '9202025800080' });
     check('an identity number can be changed', edited.status === 200, edited.body);
-    check('the change is readable as text', edited.body.id_number === '9202025800086');
+    check('the change is readable as text', edited.body.id_number === '9202025800080');
 
     const afterEdit = await withActor(adminActor, async (db) =>
       (await db.query(`SELECT id_number_bidx FROM consultant WHERE consultant_id = $1`,
@@ -887,10 +888,62 @@ async function main() {
       afterEdit !== storedNew.id_number_bidx);
 
     const reuseOld = await admin.post('/consultants', {
-      fullName: 'Fixture Four', email: 'fixture.four@example.co.za', idNumber: '9001015800085',
+      fullName: 'Fixture Four', email: 'fixture.four@example.co.za', idNumber: '9001015800088',
     });
     check('the identity number that was edited away can be used again',
       reuseOld.status === 201, reuseOld.status);
+
+    // -----------------------------------------------------------------
+    section('Identity numbers and bank accounts');
+    // -----------------------------------------------------------------
+    // The numbers above are valid. These are the ones that must not be stored,
+    // because the column is encrypted and unique: a bad value is expensive to
+    // notice afterwards.
+    const badCheckDigit = await admin.post('/consultants', {
+      fullName: 'Fixture Five', email: 'fixture.five@example.co.za', idNumber: '9001015800085',
+    });
+    check('an identity number that fails its check digit is refused',
+      badCheckDigit.status === 400 && badCheckDigit.body.detail?.idNumber !== undefined,
+      badCheckDigit.body);
+
+    const allZeros = await admin.post('/consultants', {
+      fullName: 'Fixture Six', email: 'fixture.six@example.co.za', idNumber: '0000000000000',
+    });
+    check('an all-zero identity number is refused',
+      allZeros.status === 400 && allZeros.body.detail?.idNumber !== undefined, allZeros.body);
+
+    const impossibleDate = await admin.post('/consultants', {
+      fullName: 'Fixture Seven', email: 'fixture.seven@example.co.za', idNumber: '9002295800087',
+    });
+    check('an identity number with an impossible date is refused',
+      impossibleDate.status === 400 && impossibleDate.body.detail?.idNumber !== undefined,
+      impossibleDate.body);
+
+    const badEdit = await admin.patch(`/consultants/${createdId}`, { idNumber: '0000000000000' });
+    check('a bad identity number is also refused when editing',
+      badEdit.status === 400, badEdit.status);
+
+    check('a published example identity number is accepted',
+      isValidSaIdNumber('8001015009087'));
+    check('a date of birth that has not happened yet is refused',
+      !isValidSaIdNumber('2612315800086', new Date(Date.UTC(2026, 0, 1))));
+    check('spaces are removed before the identity number is judged',
+      saIdNumber.safeParse('900101 5800 088').success
+        && saIdNumber.safeParse('900101 5800 088').data === '9001015800088');
+
+    check('a bank account reference of ordinary length is accepted',
+      bankAccountRef.safeParse('1234567890').success
+        && bankAccountRef.safeParse('1234567890').data === '1234567890');
+    check('spaces in a bank account reference are removed first',
+      bankAccountRef.safeParse('1234 5678 90').data === '1234567890');
+    check('an all-zero bank account reference is refused',
+      !bankAccountRef.safeParse('00000000').success);
+    check('a masked bank account reference is refused',
+      !bankAccountRef.safeParse('****4417').success);
+    check('a bank account reference shorter than seven digits is refused',
+      !bankAccountRef.safeParse('123456').success);
+    check('a bank account reference longer than sixteen digits is refused',
+      !bankAccountRef.safeParse('1'.repeat(17)).success);
 
     // -----------------------------------------------------------------
     section('Sign-in timing (NFR-SEC-004)');

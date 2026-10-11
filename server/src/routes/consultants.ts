@@ -7,6 +7,7 @@ import { audit } from '../services/notify.js';
 // NFR-SEC-005. The identity number is encrypted before it reaches the database.
 // Reads need nothing here: project() decrypts on the way out.
 import { encrypt, blindIndex } from '../lib/crypto.js';
+import { saIdNumber } from '../lib/identity.js';
 
 export const consultantsRouter = Router();
 
@@ -193,7 +194,7 @@ const consultantBody = z.object({
   preferredName: z.string().optional(),
   email: z.string().email('Enter a valid email address'),
   mobile: z.string().optional(),
-  idNumber: z.string().optional(),
+  idNumber: saIdNumber,
   location: z.string().optional(),
   nationality: z.string().optional(),
   rightToWork: z.string().optional(),
