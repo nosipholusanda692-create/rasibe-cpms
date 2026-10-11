@@ -58,6 +58,20 @@ twelve hours. Five would make that fifty. Against a single-address attacker
 that is a real gain; against anyone with a botnet it is nothing, because they
 have thousands of addresses and the per-address budget barely registers.
 
+## What the scanner can see
+
+`js/missing-rate-limiting` only recognises four packages. A count against
+`login_attempt` is invisible to it, so it reported this route as unlimited and
+failed the pull request on a high-severity alert.
+
+`express-rate-limit` now sits on `POST /auth/login` as well: one hundred
+requests per address per fifteen minutes, successes included. It is a blunter
+instrument than the failure count, and it is there so the limit is real rather
+than a comment telling the scanner to look away. The suite sets
+`NODE_ENV=test`, and the middleware steps aside in that case, because the
+timing and throttle checks deliberately send dozens of failures from one
+address.
+
 ## What a throttled request gets
 
 `429 Too Many Requests`, with `Retry-After`, and a message that names the
