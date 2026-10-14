@@ -204,10 +204,13 @@ timesheetsRouter.post('/:id/submit', requireAuth, async (req, res, next) => {
       const r = await c.query(
         `UPDATE timesheet SET status = 'SUBMITTED' WHERE timesheet_id = $1 RETURNING *`, [id]);
 
+      // Looked up through a privileged function: the consultant submitting the
+      // week may not read client_contact, so a direct query here returns
+      // nothing and the approver is never notified.
       const approver = await c.query(
-        `SELECT user_id FROM client_contact WHERE contact_id = $1 AND user_id IS NOT NULL`,
-        [t.rows[0].approver_contact_id]);
-      if (approver.rows.length) {
+        `SELECT placement_approver_user($1) AS user_id`,
+        [t.rows[0].placement_id]);
+      if (approver.rows[0]?.user_id) {
         await queueNotification(c, {
           event: 'TIMESHEET_AWAITING_APPROVAL',
           recipientUserId: approver.rows[0].user_id,
