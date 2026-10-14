@@ -33,6 +33,11 @@ function sslSetting(): false | { rejectUnauthorized: boolean; ca?: string } {
 pg.types.setTypeParser(1700, (v) => (v === null ? null : Number(v)));
 pg.types.setTypeParser(20, (v) => (v === null ? null : Number(v)));
 
+// date has no time zone. The default turns it into a Date at local midnight,
+// which on a UTC+2 server serialises as the previous day ("2026-10-11T22:00Z"
+// for 12 October). Keep it as the YYYY-MM-DD the database holds.
+pg.types.setTypeParser(1082, (v) => v);
+
 export const pool = new Pool({
   host: process.env.PGHOST ?? 'localhost',
   port: Number(process.env.PGPORT ?? 5432),

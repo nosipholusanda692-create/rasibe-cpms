@@ -187,7 +187,8 @@ The sign-in screen lists these; click a row to fill the form in.
 
 ```bash
 cd server
-npm test                  # 195 integration assertions
+npm test                  # 197 integration assertions
+npm run test:accounts     # 47 checks: invitations, password reset, suspension
 npx tsx src/test/e2e.ts   # 19 assertions over the screens the web client loads
 npm run test:backup       # 23 checks: back up, restore, verify (docs/BACKUP.md)
 ```
@@ -224,7 +225,7 @@ follow rather than something the repository guarantees.
 
 | Check | What it would catch |
 | --- | --- |
-| Server CI | A regression in any of the 195 behavioural assertions |
+| Server CI | A regression in any of the 197 behavioural assertions or 47 account checks |
 | Database tests | A row-level security policy or trigger that stopped holding |
 | Secret scan | A credential committed to the repository |
 | Dependency audit (server) | A known flaw in something the API ships |

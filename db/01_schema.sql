@@ -35,7 +35,10 @@ CREATE TYPE audit_action_enum      AS ENUM (
   'TIMESHEET_APPROVED','TIMESHEET_REJECTED','TIMESHEET_OVERRIDDEN','RATE_CHANGED',
   'RATE_APPROVED','INVOICE_ISSUED','INVOICE_CANCELLED','CREDIT_NOTE_RAISED',
   'CONSENT_RECORDED','VETTING_ACCESSED','BANKING_ACCESSED','USER_DEACTIVATED',
-  'PLACEMENT_TERMINATED','CONSULTANT_ANONYMISED');
+  'PLACEMENT_TERMINATED','CONSULTANT_ANONYMISED',
+  'USER_CREATED','USER_INVITED','USER_REINSTATED','USER_ROLE_CHANGED',
+  'PASSWORD_RESET_REQUESTED','PASSWORD_SET');
+CREATE TYPE account_token_purpose_enum AS ENUM ('INVITE', 'RESET');
 
 -- ---------------------------------------------------------------------
 -- Access and identity
@@ -78,6 +81,25 @@ CREATE TABLE user_session (
   ip_address  varchar(64)
 );
 CREATE INDEX ix_session_user ON user_session(user_id);
+
+-- Single-use, time-limited invitation and password-reset tokens
+-- (FR-AUT-001, FR-AUT-005, FR-AUT-010, FR-AUT-013).
+CREATE TABLE account_token (
+  token_id    uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id     uuid NOT NULL REFERENCES app_user(user_id) ON DELETE CASCADE,
+  purpose     account_token_purpose_enum NOT NULL,
+  -- A SHA-256 of the token, never the token: a reader of this table cannot
+  -- use what it holds. The plain value exists only in the notification.
+  token_hash  bytea NOT NULL UNIQUE,
+  issued_by   uuid REFERENCES app_user(user_id) ON DELETE SET NULL,
+  issued_at   timestamptz NOT NULL DEFAULT now(),
+  expires_at  timestamptz NOT NULL,
+  consumed_at timestamptz,
+  ip_address  varchar(64),
+  CONSTRAINT ck_token_window CHECK (expires_at > issued_at)
+);
+CREATE INDEX ix_account_token_live ON account_token(token_hash) WHERE consumed_at IS NULL;
+CREATE INDEX ix_account_token_user ON account_token(user_id, purpose);
 
 CREATE TABLE login_attempt (
   attempt_id  bigserial PRIMARY KEY,
