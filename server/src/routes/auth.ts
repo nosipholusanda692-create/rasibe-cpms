@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { createHash, randomBytes } from 'node:crypto';
 import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
 import { anonQuery, query, withActor } from '../lib/db.js';
@@ -401,4 +402,157 @@ authRouter.post('/change-password', requireAuth, async (req, res, next) => {
   } catch (e) {
     next(e);
   }
+});
+
+// =====================================================================
+// Invitations and password resets
+//
+// FR-AUT-005 and FR-AUT-010. Both run before a session exists, so both go
+// through the SECURITY DEFINER functions added in migration 002 rather than
+// touching app_user directly.
+//
+// The token is never stored. What is held is a SHA-256 of it, so a reader of
+// account_token cannot set anybody's password.
+// =====================================================================
+const RESET_HOURS = 1;
+
+const digest = (token: string) => createHash('sha256').update(token).digest();
+
+/** The password rule, kept in one place so both flows and the change form agree. */
+const passwordRule = z
+  .string()
+  .min(10, 'Use at least 10 characters')
+  .regex(/[A-Z]/, 'Include an upper case letter')
+  .regex(/[a-z]/, 'Include a lower case letter')
+  .regex(/[0-9]/, 'Include a number');
+
+/**
+ * Who an invitation or reset link belongs to.
+ *
+ * The set-password page calls this so it can greet the person and show which
+ * address it is for. An unknown, used or expired token is simply not valid;
+ * the caller is not told which, because the three are not usefully different.
+ */
+authRouter.get('/token/:purpose', async (req, res, next) => {
+  try {
+    const purpose = z.enum(['invite', 'reset']).parse(req.params.purpose);
+    const token = z.string().min(10).safeParse(req.query.token);
+    if (!token.success) throw badRequest('That link is not valid.');
+
+    const rows = await anonQuery<any>(
+      'SELECT * FROM account_token_subject($1,$2::account_token_purpose_enum)',
+      [digest(token.data), purpose === 'invite' ? 'INVITE' : 'RESET'],
+    );
+
+    if (!rows.length) {
+      throw new AppError(
+        410,
+        purpose === 'invite'
+          ? 'This invitation has already been used or has expired. Ask an administrator to send a new one.'
+          : 'This reset link has already been used or has expired. Request a new one.',
+        'token_expired',
+      );
+    }
+
+    res.json({ valid: true, fullName: rows[0].full_name, email: rows[0].email });
+  } catch (e) { next(e); }
+});
+
+/** Sets the password behind an invitation or a reset link, and spends the token. */
+authRouter.post('/token/:purpose', async (req, res, next) => {
+  try {
+    const purpose = z.enum(['invite', 'reset']).parse(req.params.purpose);
+    const parsed = z
+      .object({ token: z.string().min(10), password: passwordRule })
+      .safeParse(req.body);
+    if (!parsed.success) {
+      throw badRequest('Check the password you entered', parsed.error.flatten().fieldErrors);
+    }
+
+    // The same breach check the change-password form applies (NFR-SEC-002).
+    const breach = await checkBreached(parsed.data.password);
+    if (breach === 'breached') {
+      throw badRequest('Check the password you entered', {
+        password: ['This password has appeared in a data breach. Choose a different one.'],
+      });
+    }
+    if (breach === 'unknown') {
+      console.warn('[warn] breached-password check unavailable; password set allowed');
+    }
+
+    const hashed = await hashPassword(parsed.data.password);
+    const rows = await anonQuery<{ redeem_account_token: string | null }>(
+      'SELECT redeem_account_token($1,$2::account_token_purpose_enum,$3) AS redeem_account_token',
+      [digest(parsed.data.token), purpose === 'invite' ? 'INVITE' : 'RESET', hashed],
+    );
+
+    const userId = rows[0]?.redeem_account_token;
+    if (!userId) {
+      throw new AppError(
+        410,
+        'That link has already been used or has expired.',
+        'token_expired',
+      );
+    }
+
+    await anonQuery(
+      `INSERT INTO audit_entry (actor_user_id, action, entity_table, entity_id, reason)
+       VALUES ($1,'PASSWORD_SET','app_user',$1,$2)`,
+      [userId, purpose === 'invite' ? 'Password set from invitation' : 'Password set from reset link'],
+    );
+
+    res.json({ ok: true });
+  } catch (e) { next(e); }
+});
+
+/**
+ * FR-AUT-005. Requests a reset link.
+ *
+ * Answers identically whether or not the address is registered, so the form
+ * cannot be used to discover who has an account.
+ */
+authRouter.post('/forgot-password', async (req, res, next) => {
+  try {
+    const parsed = z.object({ email: z.string().email() }).safeParse(req.body);
+    const answer = {
+      ok: true,
+      message: 'If that address has an account, a reset link is on its way. It is valid for one hour.',
+    };
+    if (!parsed.success) return res.json(answer);
+
+    const rows = await anonQuery<any>('SELECT * FROM account_for_reset($1)', [parsed.data.email]);
+    if (!rows.length) return res.json(answer);
+
+    const plain = randomBytes(32).toString('base64url');
+    await anonQuery(
+      'SELECT issue_account_token($1,$2::account_token_purpose_enum,$3,$4,$5,$6)',
+      [rows[0].user_id, 'RESET', digest(plain), RESET_HOURS, null, req.ip ?? null],
+    );
+
+    const base = process.env.PUBLIC_WEB_URL ?? process.env.CORS_ORIGIN ?? 'http://localhost:5173';
+    const link = `${base}/reset-password?token=${plain}`;
+
+    await anonQuery(
+      `INSERT INTO notification (event, channel, recipient_user_id, recipient_email, subject, body)
+       VALUES ('PASSWORD_RESET','EMAIL',$1,$2,$3,$4)`,
+      [
+        rows[0].user_id,
+        rows[0].email,
+        'Reset your Rasibe password',
+        `Hello ${rows[0].full_name}, use this link to set a new password. It expires in one hour: ${link}`,
+      ],
+    );
+
+    await anonQuery(
+      `INSERT INTO audit_entry (actor_user_id, action, entity_table, entity_id, reason)
+       VALUES ($1,'PASSWORD_RESET_REQUESTED','app_user',$1,$2)`,
+      [rows[0].user_id, 'Reset requested'],
+    );
+
+    res.json({
+      ...answer,
+      // Development only: no mail is delivered, so the link would be unreachable.
+      resetLink: process.env.NODE_ENV === 'production' ? undefined : link,
+    });
+  } catch (e) { next(e); }
 });

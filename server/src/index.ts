@@ -22,6 +22,7 @@ import { timesheetsRouter } from './routes/timesheets.js';
 import { invoicesRouter, dashboardRouter, reportsRouter } from './routes/invoices.js';
 import { notificationsRouter } from './routes/notifications.js';
 import { settingsRouter } from './routes/settings.js';
+import { usersRouter } from './routes/users.js';
 
 /**
  * Express accepts a hop count, a boolean, or a list of addresses.
@@ -144,6 +145,7 @@ export function createApp() {
   app.use('/api/reports', reportsRouter);
   app.use('/api/notifications', notificationsRouter);
   app.use('/api/settings', settingsRouter);
+  app.use('/api/users', usersRouter);
 
   app.use((_req, res) => {
     res.status(404).json({ error: 'not_found', message: 'No such endpoint' });

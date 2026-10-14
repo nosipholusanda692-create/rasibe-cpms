@@ -20,6 +20,9 @@ import Invoices from './pages/Invoices';
 import InvoiceDetail from './pages/InvoiceDetail';
 import Reports from './pages/Reports';
 import Settings from './pages/Settings';
+import Users from './pages/Users';
+import SetPassword from './pages/SetPassword';
+import ForgotPassword from './pages/ForgotPassword';
 
 // =====================================================================
 // Sign in
@@ -87,12 +90,17 @@ function SignIn() {
             {busy ? 'Signing in…' : 'Sign in'}
           </button>
 
+          <div className="right" style={{ marginTop: 12 }}>
+            <a href="/forgot-password" className="small">Forgotten your password?</a>
+          </div>
+
           <div className="card" style={{ marginTop: 22, boxShadow: 'none' }}>
             <div className="card-body small">
               <strong>Consultants</strong> — submit your timesheets from the same sign in.
             </div>
           </div>
 
+          {import.meta.env.DEV && (
           <div style={{ marginTop: 20, borderTop: '1px solid var(--line)', paddingTop: 14 }}>
             <div className="tile-label" style={{ marginBottom: 8 }}>Demonstration accounts</div>
             <table className="small">
@@ -113,6 +121,7 @@ function SignIn() {
             </table>
             <div className="field-hint">Password for all: Password123! — click a row to fill it in.</div>
           </div>
+          )}
         </form>
       </div>
     </div>
@@ -173,7 +182,10 @@ function useNav(): NavGroup[] {
     ] },
   ];
   if (role === 'ADMINISTRATOR') {
-    groups.push({ label: 'System', items: [{ to: '/settings', label: 'Settings' }] });
+    groups.push({ label: 'System', items: [
+      { to: '/users', label: 'User accounts' },
+      { to: '/settings', label: 'Settings' },
+    ] });
   }
   return groups;
 }
@@ -188,7 +200,7 @@ function Shell({ children }: { children: React.ReactNode }) {
     '/dashboard': 'Dashboard', '/consultants': 'Consultants', '/clients': 'Clients',
     '/requests': 'Role requests', '/placements': 'Placements', '/timesheets': 'Timesheets',
     '/invoices': 'Invoices', '/reports': 'Reports', '/settings': 'Settings',
-    '/approvals': 'Timesheet approvals', '/my/timesheets': 'My timesheets',
+    '/approvals': 'Timesheet approvals', '/my/timesheets': 'My timesheets', '/users': 'User accounts',
     '/my/placements': 'My placements', '/my/profile': 'My profile', '/skills': 'Skills',
   };
   const title = titles[loc.pathname] ?? 'Rasibe';
@@ -267,6 +279,9 @@ export default function App() {
       <BrowserRouter>
         <Routes>
           <Route path="/signin" element={<SignIn />} />
+          <Route path="/forgot-password" element={<ForgotPassword />} />
+          <Route path="/accept-invitation" element={<SetPassword purpose="invite" />} />
+          <Route path="/reset-password" element={<SetPassword purpose="reset" />} />
           <Route path="/" element={<Landing />} />
           <Route path="/dashboard" element={<Protected><Dashboard /></Protected>} />
           <Route path="/consultants" element={<Protected><Consultants /></Protected>} />
@@ -285,6 +300,7 @@ export default function App() {
           <Route path="/invoices/:id" element={<Protected><InvoiceDetail /></Protected>} />
           <Route path="/reports" element={<Protected><Reports /></Protected>} />
           <Route path="/settings" element={<Protected><Settings /></Protected>} />
+          <Route path="/users" element={<Protected><Users /></Protected>} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>
