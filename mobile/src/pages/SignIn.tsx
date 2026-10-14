@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useAuth, Banner } from '../lib';
+import ForgotPassword from './ForgotPassword';
 
 const DEMO = [
   ['Consultant', 'thabo.m@example.co.za'],
@@ -8,6 +9,7 @@ const DEMO = [
 
 export default function SignIn() {
   const { signIn } = useAuth();
+  const [forgot, setForgot] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -25,6 +27,8 @@ export default function SignIn() {
       setBusy(false);
     }
   }
+
+  if (forgot) return <ForgotPassword onBack={() => setForgot(false)} />;
 
   return (
     <div className="signin">
@@ -61,8 +65,14 @@ export default function SignIn() {
           <button className="btn btn-primary btn-block" type="submit" disabled={busy}>
             {busy ? 'Signing in…' : 'Sign in'}
           </button>
+
+          <div className="center" style={{ marginTop: 14 }}>
+            <button type="button" className="btn btn-ghost"
+              onClick={() => setForgot(true)}>Forgotten your password?</button>
+          </div>
         </form>
 
+        {import.meta.env.DEV && (
         <div style={{ marginTop: 18, borderTop: '1px solid var(--line-soft)', paddingTop: 12 }}>
           <div className="field-hint" style={{ marginBottom: 6 }}>Demonstration accounts</div>
           {DEMO.map(([role, mail]) => (
@@ -77,6 +87,7 @@ export default function SignIn() {
           ))}
           <div className="field-hint">Password: Password123!</div>
         </div>
+        )}
       </div>
     </div>
   );
