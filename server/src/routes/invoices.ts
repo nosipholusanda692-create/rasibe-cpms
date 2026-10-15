@@ -4,6 +4,7 @@ import { query, withActor } from '../lib/db.js';
 import { badRequest, notFound, conflict, project, assertCapability } from '../lib/errors.js';
 import { requireAuth, requireInternal, requireAdmin } from '../middleware/auth.js';
 import { INVOICE_STATUS, enumList, queryInt } from '../lib/validation.js';
+import { csvDocument } from '../lib/csv.js';
 import { audit, queueNotification } from '../services/notify.js';
 
 export const invoicesRouter = Router();
@@ -295,14 +296,16 @@ invoicesRouter.post('/:id/export', requireAdmin, async (req, res, next) => {
       const lines = await c.query(`SELECT * FROM invoice_line WHERE invoice_id = $1`, [id]);
       await c.query(`UPDATE invoice SET exported_at = now() WHERE invoice_id = $1`, [id]);
 
-      const header = 'invoice_number,client,date,description,quantity,unit_rate,line_total';
-      const body = lines.rows.map((l: any) =>
-        [inv.rows[0].invoice_number, `"${inv.rows[0].legal_name}"`, inv.rows[0].issued_at?.toISOString?.().slice(0, 10) ?? '',
-         `"${l.description}"`, l.quantity, l.unit_rate, l.line_total].join(',')).join('\n');
-      return `${header}\n${body}`;
+      const i = inv.rows[0];
+      return csvDocument(
+        ['invoice_number', 'client', 'date', 'description', 'quantity', 'unit_rate', 'line_total'],
+        lines.rows.map((l: any) => [
+          i.invoice_number, i.legal_name, i.issued_at, l.description, l.quantity, l.unit_rate, l.line_total,
+        ]),
+      );
     });
 
-    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="invoice-${id}.csv"`);
     res.send(out);
   } catch (e) { next(e); }

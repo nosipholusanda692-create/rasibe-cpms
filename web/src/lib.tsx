@@ -39,11 +39,35 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   return data as T;
 }
 
+/** POSTs (so the CSRF header goes with it) and saves the response as a file. */
+async function download(path: string, filename: string): Promise<void> {
+  const res = await fetch(`/api${path}`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: csrfHeader(),
+  });
+  if (!res.ok) {
+    let data: any = null;
+    try { data = JSON.parse(await res.text()); } catch { /* not JSON */ }
+    throw new ApiError(res.status, data?.message ?? 'Something went wrong', data?.error, data?.detail);
+  }
+
+  const url = URL.createObjectURL(await res.blob());
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0); // some browsers start the save after click() returns
+}
+
 export const api = {
   get: <T,>(p: string) => request<T>('GET', p),
   post: <T,>(p: string, b?: unknown) => request<T>('POST', p, b),
   put: <T,>(p: string, b?: unknown) => request<T>('PUT', p, b),
   patch: <T,>(p: string, b?: unknown) => request<T>('PATCH', p, b),
+  download,
 };
 
 // =====================================================================

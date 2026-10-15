@@ -14,6 +14,7 @@ import { TLS_CIPHERS } from '../lib/https.js';
 import { bankAccountRef, isValidSaIdNumber, saIdNumber } from '../lib/identity.js';
 import { logServerError } from '../lib/logging.js';
 import { translateDbError } from '../lib/errors.js';
+import { csvCell, csvDocument } from '../lib/csv.js';
 import {
   hashPassword, isArgon2, isPeppered, needsRehash, PASSWORD_OPTIONS, PEPPER_MARK, verifyPassword,
 } from '../lib/passwords.js';
@@ -44,6 +45,27 @@ function check(name: string, condition: boolean, detail?: unknown) {
 
 function section(title: string) {
   console.log(`\n${title}`);
+}
+
+/** Reads CSV the way a spreadsheet does (RFC 4180), to check what it would see. */
+function parseCsv(text: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let cell = '';
+  let quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (quoted) {
+      if (ch === '"' && text[i + 1] === '"') { cell += '"'; i++; }
+      else if (ch === '"') quoted = false;
+      else cell += ch;
+    } else if (ch === '"') quoted = true;
+    else if (ch === ',') { row.push(cell); cell = ''; }
+    else if (ch === '\r' && text[i + 1] === '\n') { row.push(cell); rows.push(row); row = []; cell = ''; i++; }
+    else cell += ch;
+  }
+  if (cell || row.length) { row.push(cell); rows.push(row); }
+  return rows;
 }
 
 // ---------------------------------------------------------------------
@@ -1365,6 +1387,36 @@ async function main() {
       translateDbError({ code: '22003', message: 'numeric field overflow' }).status === 400);
     check('a genuine fault is still a 500',
       translateDbError({ code: '57P01', message: 'terminating connection' }).status === 500);
+
+    // -----------------------------------------------------------------
+    section('CSV export (CSV injection, CWE-1236)');
+    // -----------------------------------------------------------------
+    check('a quote inside a value is doubled, not left to end the cell',
+      csvCell('Acme "Holdings", Ltd') === '"Acme ""Holdings"", Ltd"', csvCell('Acme "Holdings", Ltd'));
+    for (const hostile of ['=HYPERLINK("http://evil.example","x")', '+27 21 555 0100', '@SUM(A1)', '\tTab', '-cmd']) {
+      check(`a value starting ${JSON.stringify(hostile[0])} is shown as text, not run as a formula`,
+        csvCell(hostile).startsWith(`"'`), csvCell(hostile));
+    }
+    check('a negative amount stays a number', csvCell('-8.00') === '-8.00', csvCell('-8.00'));
+    check('a missing value is an empty cell', csvCell(null) === '' && csvCell(undefined) === '');
+    check('a newline stays inside its quoted cell', csvCell('two\nlines') === '"two\nlines"');
+
+    const creditNote = (await checker.get('/invoices')).body.items.find((i: any) => Number(i.total) < 0);
+    const exported = await checker.post(`/invoices/${creditNote.invoice_id}/export`);
+    const csvText = String(exported.body);
+    const rows = parseCsv(csvText.replace(/^\uFEFF/, ''));
+    check('the export is a CSV file', exported.status === 200 && rows.length >= 2, exported.status);
+    // fetch's text() drops a leading BOM, so it is checked on the document itself.
+    check('it starts with a byte-order mark so Excel reads it as UTF-8',
+      csvDocument(['a'], [['b']]) === '\uFEFF"a"\r\n"b"\r\n', csvDocument(['a'], [['b']]));
+    check('every row has the same seven columns',
+      rows.every((r) => r.length === 7), rows.map((r) => r.length));
+    check('a credit line total is exported as a plain negative number',
+      rows.slice(1).every((r) => /^-\d+(\.\d+)?$/.test(r[6])), rows.slice(1).map((r) => r[6]));
+    const csvRecruiter = new Client('csv recruiter');
+    await csvRecruiter.login('nosipho@rasibe.co.za');
+    check('a recruiter may not export', (await csvRecruiter.post(
+      `/invoices/${creditNote.invoice_id}/export`)).status === 403);
 
     // -----------------------------------------------------------------
     section('Idle session timeout');

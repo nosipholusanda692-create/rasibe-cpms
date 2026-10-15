@@ -198,6 +198,16 @@ export function InvoiceDetailPage() {
     }
   }
 
+  async function exportCsv(name: string) {
+    try {
+      await api.download(`/invoices/${id}/export`, `${name}.csv`);
+      setMsg({ kind: 'success', text: 'Exported for the bookkeeper.' });
+      inv.reload();
+    } catch (e) {
+      setMsg({ kind: 'error', text: e instanceof Error ? e.message : 'Could not export the invoice' });
+    }
+  }
+
   if (inv.loading) return <Loading />;
   if (inv.error) return <Alert kind="error">{inv.error}</Alert>;
   const d = inv.data;
@@ -228,7 +238,7 @@ export function InvoiceDetailPage() {
               <>
                 <a className="btn" href={`/api/invoices/${id}/export`} onClick={(e) => {
                   e.preventDefault();
-                  void act('export', {}, 'Exported for the bookkeeper.');
+                  void exportCsv(d.invoice_number ?? `invoice-${id}`);
                 }}>Export for bookkeeper</a>
                 <button className="btn btn-danger" onClick={() => {
                   const reason = window.prompt('Reason for the credit note:');
