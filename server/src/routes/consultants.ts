@@ -8,6 +8,7 @@ import { audit } from '../services/notify.js';
 // Reads need nothing here: project() decrypts on the way out.
 import { encrypt, blindIndex } from '../lib/crypto.js';
 import { saIdNumber } from '../lib/identity.js';
+import { AVAILABILITY, SENIORITY, isoDate, queryInt, searchText } from '../lib/validation.js';
 
 export const consultantsRouter = Router();
 
@@ -22,15 +23,15 @@ consultantsRouter.get('/', requireAuth, async (req, res, next) => {
   try {
     const q = z
       .object({
-        search: z.string().optional(),
+        search: searchText.optional(),
         skill: z.string().uuid().optional(),
-        seniority: z.string().optional(),
-        availability: z.string().optional(),
-        availableFrom: z.string().optional(),
-        maxRate: z.coerce.number().optional(),
-        location: z.string().optional(),
-        page: z.coerce.number().min(1).default(1),
-        pageSize: z.coerce.number().min(1).max(100).default(25),
+        seniority: z.enum(SENIORITY).optional(),
+        availability: z.enum(AVAILABILITY).optional(),
+        availableFrom: isoDate.optional(),
+        maxRate: z.coerce.number().finite().min(0).optional(),
+        location: searchText.optional(),
+        page: queryInt(1, 10_000).default(1),
+        pageSize: queryInt(1, 100).default(25),
       })
       .parse(req.query);
 

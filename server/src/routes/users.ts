@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { query, withActor } from '../lib/db.js';
 import { badRequest, notFound, conflict, assertCapability } from '../lib/errors.js';
 import { requireAdmin } from '../middleware/auth.js';
+import { ROLES, queryBool, searchText } from '../lib/validation.js';
 import { audit, queueNotification } from '../services/notify.js';
 
 export const usersRouter = Router();
@@ -36,9 +37,9 @@ usersRouter.get('/', requireAdmin, async (req, res, next) => {
   try {
     assertCapability(req.actor!.role, 'manage_users');
     const q = z.object({
-      search: z.string().optional(),
-      role: z.string().optional(),
-      includeInactive: z.coerce.boolean().default(true),
+      search: searchText.optional(),
+      role: z.enum(ROLES).optional(),
+      includeInactive: queryBool(true),
     }).parse(req.query);
 
     const params: unknown[] = [];

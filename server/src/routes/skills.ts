@@ -2,12 +2,13 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { query } from '../lib/db.js';
 import { requireAuth, requireInternal } from '../middleware/auth.js';
+import { searchText } from '../lib/validation.js';
 
 export const skillsRouter = Router();
 
 skillsRouter.get('/', requireAuth, async (req, res, next) => {
   try {
-    const q = z.object({ search: z.string().optional() }).parse(req.query);
+    const q = z.object({ search: searchText.optional() }).parse(req.query);
     const rows = await query(
       req.actor!,
       `SELECT skill_id, name, category,

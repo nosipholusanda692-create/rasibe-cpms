@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { query, withActor } from '../lib/db.js';
 import { badRequest, notFound, conflict, project, assertCapability } from '../lib/errors.js';
 import { requireAuth, requireInternal, requireAdmin } from '../middleware/auth.js';
+import { INVOICE_STATUS, enumList, queryInt } from '../lib/validation.js';
 import { audit, queueNotification } from '../services/notify.js';
 
 export const invoicesRouter = Router();
@@ -15,7 +16,7 @@ export const reportsRouter = Router();
 invoicesRouter.get('/', requireAuth, async (req, res, next) => {
   try {
     const q = z.object({
-      status: z.string().optional(),
+      status: enumList(INVOICE_STATUS).optional(),
       clientId: z.string().uuid().optional(),
     }).parse(req.query);
 
@@ -414,7 +415,7 @@ reportsRouter.get('/outstanding-timesheets', requireInternal, async (req, res, n
 
 reportsRouter.get('/placements-ending', requireInternal, async (req, res, next) => {
   try {
-    const days = Number(req.query.days ?? 90);
+    const { days } = z.object({ days: queryInt(0, 3650).default(90) }).parse(req.query);
     const rows = await query(req.actor!,
       `SELECT p.placement_id, p.reference, p.end_date, p.status,
               con.full_name AS consultant_name, cl.legal_name AS client_name,
@@ -448,7 +449,7 @@ reportsRouter.get('/audit', requireAdmin, async (req, res, next) => {
   try {
     assertCapability(req.actor!.role, 'view_audit');
     const q = z.object({
-      entityTable: z.string().optional(),
+      entityTable: z.string().max(60).optional(),
       entityId: z.string().uuid().optional(),
       limit: z.coerce.number().min(1).max(500).default(100),
     }).parse(req.query);
