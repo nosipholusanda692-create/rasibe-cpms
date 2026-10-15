@@ -683,6 +683,8 @@ async function main() {
       h('referrer-policy') === 'no-referrer', h('referrer-policy'));
     check('the browsing context is isolated from cross-origin openers',
       h('cross-origin-opener-policy') === 'same-origin', h('cross-origin-opener-policy'));
+    check('only resources that opt in may be embedded (COEP)',
+      h('cross-origin-embedder-policy') === 'require-corp', h('cross-origin-embedder-policy'));
     check('legacy cross-domain policy files are refused',
       h('x-permitted-cross-domain-policies') === 'none',
       h('x-permitted-cross-domain-policies'));

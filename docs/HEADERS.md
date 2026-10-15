@@ -24,6 +24,7 @@ checked is what a browser would actually receive.
 | `X-Content-Type-Options` | `nosniff` | A response being executed as a type it did not declare |
 | `Referrer-Policy` | `no-referrer` | Our URLs leaking to whatever a user visits next |
 | `Cross-Origin-Opener-Policy` | `same-origin` | A cross-origin opener keeping a handle on the window |
+| `Cross-Origin-Embedder-Policy` | `require-corp` | A page from this origin embedding a resource that did not opt in |
 | `X-Permitted-Cross-Domain-Policies` | `none` | Legacy plugin cross-domain policy files |
 | `Strict-Transport-Security` | one year, subdomains | Asserted since RCP-06 |
 
@@ -66,10 +67,14 @@ tightening it would break the front end, which uses React inline `style`
 props in several places. It is Nosipho's area and a real change rather than a
 configuration tweak, so it is recorded here instead of taken.
 
-**`Cross-Origin-Embedder-Policy` is not set.** helmet leaves it off by default.
-It is a Spectre mitigation aimed at pages that use cross-origin isolation
-features, which this API does not, and enabling it would restrict how resources
-can be loaded for no benefit here.
+**`Cross-Origin-Embedder-Policy` is set, but only bites on documents.** helmet 8
+leaves it off; it is now `require-corp`, because the transport requirements list
+it alongside COOP. A browser applies it to HTML documents and workers, not to
+JSON, so on the API today it changes nothing. It starts to matter if Express
+serves `web/dist` (deployment phase 2): the page could then embed only
+resources that opt in. The front end loads nothing from another origin (no
+fonts, images or scripts from a CDN), so that holds without changes; adding an
+external resource later would need it to send CORP or CORS headers.
 
 **Headers are not the control, only the reminder.** Every one of these asks the
 browser to behave. The protections that do not depend on the client's goodwill
@@ -78,7 +83,7 @@ bound to the session, and the authorisation checks on each route.
 
 ## Evidence
 
-Nine checks in `server/src/test/run.ts`, under *Security response headers*. They
+Ten checks in `server/src/test/run.ts`, under *Security response headers*. They
 read a real response from the running application rather than inspecting the
 helmet options.
 

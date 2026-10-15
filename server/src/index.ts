@@ -79,6 +79,10 @@ export function createApp() {
     helmet({
       // JSON API may be on a different origin from the client (CORS_ORIGIN).
       crossOriginResourcePolicy: { policy: 'cross-origin' },
+      // Helmet 8 leaves this off. With it, a document from this origin may only
+      // embed resources that opt in (CORP or CORS), which completes the
+      // isolation COOP same-origin starts.
+      crossOriginEmbedderPolicy: { policy: 'require-corp' },
       // NFR-SEC-001. A year is the floor browsers expect before they will
       // honour a preload submission. A browser only acts on this over TLS, so
       // it is inert rather than harmful in development. Preload itself is not
