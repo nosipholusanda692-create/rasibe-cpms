@@ -21,7 +21,7 @@ rasibe/
 │   ├── 02_security.sql     database roles, row-level security, projection views
 │   ├── 03_triggers.sql     the five state machines and the financial invariants
 │   ├── 04_seed.sql         reference data and a demonstration data set
-│   ├── tests.sql           36 checks over the policies, triggers and invariants
+│   ├── tests.sql           38 checks over the policies, triggers and invariants
 │   └── SCHEMA-DIFF.md      why db/ is the live schema, and how it differs from design
 ├── server/                 Node, Express and TypeScript API
 │   └── src/
@@ -195,7 +195,7 @@ npm run test:backup       # 23 checks: back up, restore, verify (docs/BACKUP.md)
 ```
 
 ```bash
-psql -U rasibe_app -d rasibe -v ON_ERROR_STOP=1 -f db/tests.sql   # 36 database checks
+psql -U rasibe_app -d rasibe -v ON_ERROR_STOP=1 -f db/tests.sql   # 38 database checks
 ```
 
 All three run against the real database rather than against mocks. Every

@@ -69,6 +69,9 @@ export function translateDbError(err: any): AppError {
     return badRequest(message.replace(/^.*?:\s*/, ''));
   }
 
+  if (code === '23503' && (constraint === 'fk_rate_card_currency' || constraint === 'fk_invoice_currency')) {
+    return badRequest('That currency is not supported.');
+  }
   if (code === '23503') return badRequest('That referenced record does not exist.');
   if (code === '42501') return forbidden(message.replace(/^.*?:\s*/, ''));
 
