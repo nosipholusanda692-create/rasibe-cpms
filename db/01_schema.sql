@@ -37,7 +37,8 @@ CREATE TYPE audit_action_enum      AS ENUM (
   'CONSENT_RECORDED','VETTING_ACCESSED','BANKING_ACCESSED','USER_DEACTIVATED',
   'PLACEMENT_TERMINATED','CONSULTANT_ANONYMISED',
   'USER_CREATED','USER_INVITED','USER_REINSTATED','USER_ROLE_CHANGED',
-  'PASSWORD_RESET_REQUESTED','PASSWORD_SET');
+  'PASSWORD_RESET_REQUESTED','PASSWORD_SET',
+  'TWO_FACTOR_ENABLED','TWO_FACTOR_DISABLED','TWO_FACTOR_RESET','RECOVERY_CODE_USED');
 CREATE TYPE account_token_purpose_enum AS ENUM ('INVITE', 'RESET');
 
 -- ---------------------------------------------------------------------
@@ -53,9 +54,17 @@ CREATE TABLE app_user (
   failed_logins   int NOT NULL DEFAULT 0,
   locked_until    timestamptz,
   last_login_at   timestamptz,
+  -- Two-factor authentication. Both secrets are AES-256-GCM ciphertext written
+  -- by the service (lib/crypto.ts); the key never reaches the database.
+  totp_secret         text,
+  totp_pending_secret text,
+  totp_enabled_at     timestamptz,
+  -- The last 30-second step accepted, so one code cannot be used twice.
+  totp_last_step      bigint,
   created_at      timestamptz NOT NULL DEFAULT now(),
   updated_at      timestamptz NOT NULL DEFAULT now(),
-  CONSTRAINT ck_user_email CHECK (position('@' in email) > 1)
+  CONSTRAINT ck_user_email CHECK (position('@' in email) > 1),
+  CONSTRAINT ck_user_totp CHECK ((totp_enabled_at IS NULL) = (totp_secret IS NULL))
 );
 
 CREATE TABLE user_role (
@@ -100,6 +109,31 @@ CREATE TABLE account_token (
 );
 CREATE INDEX ix_account_token_live ON account_token(token_hash) WHERE consumed_at IS NULL;
 CREATE INDEX ix_account_token_user ON account_token(user_id, purpose);
+
+-- The step between a correct password and a correct code. Only a SHA-256 of
+-- the challenge is held, as with account_token.
+CREATE TABLE login_challenge (
+  challenge_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id      uuid NOT NULL REFERENCES app_user(user_id) ON DELETE CASCADE,
+  token_hash   bytea NOT NULL UNIQUE,
+  issued_at    timestamptz NOT NULL DEFAULT now(),
+  expires_at   timestamptz NOT NULL,
+  attempts     int NOT NULL DEFAULT 0,
+  consumed_at  timestamptz,
+  ip_address   varchar(64),
+  CONSTRAINT ck_challenge_window CHECK (expires_at > issued_at)
+);
+CREATE INDEX ix_login_challenge_user ON login_challenge(user_id);
+
+-- Single-use codes for when the phone is not to hand. Held as a keyed HMAC.
+CREATE TABLE recovery_code (
+  code_id    uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id    uuid NOT NULL REFERENCES app_user(user_id) ON DELETE CASCADE,
+  code_hash  bytea NOT NULL UNIQUE,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  used_at    timestamptz
+);
+CREATE INDEX ix_recovery_code_user ON recovery_code(user_id) WHERE used_at IS NULL;
 
 CREATE TABLE login_attempt (
   attempt_id  bigserial PRIMARY KEY,
