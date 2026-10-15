@@ -316,6 +316,8 @@ async function main() {
     check('the consultant has a current week', current.body.items.length > 0, current.body);
     const sheet = current.body.items[0];
     const ws = sheet.week_start.slice(0, 10);
+    check('a date column arrives as the calendar day, not an instant',
+      /^\d{4}-\d{2}-\d{2}$/.test(sheet.week_start), sheet.week_start);
 
     const future = new Date(Date.now() + 7 * 86_400_000).toISOString().slice(0, 10);
     const futureSave = await consultant.put(`/timesheets/${sheet.timesheet_id}/lines`, {
@@ -335,6 +337,11 @@ async function main() {
     check('a draft week can be saved', save.status === 200, save.body);
     check('weekly totals are derived from the day lines',
       Number(save.body.total_standard_hours) === days.length * 8, save.body.total_standard_hours);
+    const reread = await consultant.get(`/timesheets/my/current?weekStart=${ws}`);
+    const rereadDays = (reread.body.items.find((s: any) => s.timesheet_id === sheet.timesheet_id)?.lines ?? [])
+      .map((l: any) => l.work_date);
+    check('saved days read back as the same days',
+      JSON.stringify(rereadDays) === JSON.stringify(days), { saved: days, read: rereadDays });
 
     const overMax = await consultant.put(`/timesheets/${sheet.timesheet_id}/lines`, {
       lines: [{ workDate: days[0], normalHours: 20, overtimeHours: 0 }],
@@ -1146,7 +1153,10 @@ async function main() {
     check('a hash at the current parameters is not rewritten again', !needsRehash(fresh));
 
     await anonQuery(
-      `INSERT INTO app_user (email, full_name, password_hash) VALUES ($1, $2, $3)`,
+      `WITH u AS (
+         INSERT INTO app_user (email, full_name, password_hash) VALUES ($1, $2, $3)
+         RETURNING user_id)
+       INSERT INTO user_role (user_id, role) SELECT user_id, 'RECRUITER' FROM u`,
       [legacyEmail, 'Argon Upgrade', legacyHash],
     );
     const storedBefore = await anonQuery<{ password_hash: string }>(
@@ -1201,7 +1211,10 @@ async function main() {
     check('an Argon2id hash without the pepper is due for rewriting', needsRehash(unpeppered));
     const pepperEmail = 'pepper.upgrade@example.co.za';
     await anonQuery(
-      `INSERT INTO app_user (email, full_name, password_hash) VALUES ($1, $2, $3)`,
+      `WITH u AS (
+         INSERT INTO app_user (email, full_name, password_hash) VALUES ($1, $2, $3)
+         RETURNING user_id)
+       INSERT INTO user_role (user_id, role) SELECT user_id, 'RECRUITER' FROM u`,
       [pepperEmail, 'Pepper Upgrade', unpeppered],
     );
     const pepperLogin = await new Client('pepper').post('/auth/login', {

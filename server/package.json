@@ -9,7 +9,9 @@
     "start": "node dist/index.js",
     "test": "tsx src/test/run.ts",
     "test:backup": "tsx src/test/backup-drill.ts",
+    "test:accounts": "tsx src/test/accounts.ts",
     "encrypt-existing": "tsx src/scripts/encrypt-existing.ts",
+    "db:setup": "tsx src/scripts/setup-database.ts",
     "backup": "tsx src/scripts/backup.ts",
     "restore": "tsx src/scripts/restore.ts"
   },
