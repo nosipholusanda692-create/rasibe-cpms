@@ -1391,6 +1391,43 @@ async function main() {
       translateDbError({ code: '57P01', message: 'terminating connection' }).status === 500);
 
     // -----------------------------------------------------------------
+    section('Unknown fields in request bodies (mass assignment)');
+    // -----------------------------------------------------------------
+    // A field the schema does not name is refused, not quietly dropped, so a
+    // later change that starts reading it cannot be reached from outside.
+    const extraField = await checker.post('/skills', { name: 'Strict Fixture Skill', isApproved: true });
+    check('a field the form does not have is refused', extraField.status === 400, extraField);
+    check('and the refusal names the field',
+      extraField.body?.detail?.isApproved?.[0] === 'This field is not accepted', extraField.body?.detail);
+    check('the same body without it is accepted',
+      (await checker.post('/skills', { name: 'Strict Fixture Skill' })).status === 201);
+
+    const nestedExtra = await worker.post('/timesheets/sync', {
+      clientUuid: '00000000-0000-4000-8000-000000000001',
+      placementId: '00000000-0000-4000-8000-000000000002',
+      weekStart: '2026-10-12',
+      lines: [{ workDate: '2026-10-12', normalHours: 8, approvedBy: 'self' }],
+    });
+    check('an unknown field inside a list item is refused too', nestedExtra.status === 400, nestedExtra);
+
+    const queued = await worker.post('/timesheets/sync', {
+      clientUuid: '00000000-0000-4000-8000-000000000003',
+      placementId: '00000000-0000-4000-8000-000000000004',
+      weekStart: '2026-10-12',
+      lines: [],
+      queuedAt: new Date().toISOString(),
+    });
+    check('a week already queued by the web client (with queuedAt) is still accepted for sync',
+      queued.status !== 400 && queued.status < 500, queued);
+
+    const [poolMember] = (await checker.get('/consultants')).body.items;
+    const objectReason = await checker.post(`/consultants/${poolMember.consultant_id}/consent`, {
+      reason: { $ne: null },
+    });
+    check('a reason that is not text is refused where none used to be checked',
+      objectReason.status === 400, objectReason);
+
+    // -----------------------------------------------------------------
     section('CSV export (CSV injection, CWE-1236)');
     // -----------------------------------------------------------------
     check('a quote inside a value is doubled, not left to end the cell',

@@ -7,6 +7,7 @@ import { anonQuery, query, withActor } from '../lib/db.js';
 import { badRequest, conflict, forbidden, notFound, unauthorised, AppError } from '../lib/errors.js';
 import { checkBreached } from '../lib/breached.js';
 import { hashPassword, needsRehash, spendDecoyComparison, verifyPassword } from '../lib/passwords.js';
+import { fieldErrors } from '../lib/validation.js';
 import {
   SESSION_COOKIE,
   adminTwoFactorRequired,
@@ -165,7 +166,7 @@ async function spendComparisonTime(password: string): Promise<void> {
 const credentials = z.object({
   email: z.string().email('Enter a valid email address'),
   password: z.string().min(1, 'Enter your password'),
-});
+}).strict();
 
 /** Where each role lands after signing in, as shown on the prototype. */
 const LANDING: Record<string, string> = {
@@ -179,7 +180,7 @@ authRouter.post('/login', loginLimiter, async (req, res, next) => {
   try {
     const parsed = credentials.safeParse(req.body);
     if (!parsed.success) {
-      throw badRequest('Check the details you entered', parsed.error.flatten().fieldErrors);
+      throw badRequest('Check the details you entered', fieldErrors(parsed.error));
     }
     const { email, password } = parsed.data;
     const ip = req.ip ?? null;
@@ -394,14 +395,14 @@ const anonExec: Exec = (sql, params) => anonQuery(sql, params);
 
 const secondFactor = z.object({
   code: z.string().trim().min(6, 'Enter the code from your authenticator app').max(20),
-});
+}).strict();
 
 /** The second sign-in step, after `/login` answered `twoFactorRequired`. */
 authRouter.post('/login/verify', loginLimiter, async (req, res, next) => {
   try {
     const parsed = secondFactor.safeParse(req.body);
     if (!parsed.success) {
-      throw badRequest('Check the code you entered', parsed.error.flatten().fieldErrors);
+      throw badRequest('Check the code you entered', fieldErrors(parsed.error));
     }
 
     const expired = () => {
@@ -576,10 +577,10 @@ authRouter.post('/change-password', requireAuth, async (req, res, next) => {
         .regex(/[A-Z]/, 'Include an upper case letter')
         .regex(/[a-z]/, 'Include a lower case letter')
         .regex(/[0-9]/, 'Include a number'),
-    });
+    }).strict();
     const parsed = schema.safeParse(req.body);
     if (!parsed.success) {
-      throw badRequest('Check the details you entered', parsed.error.flatten().fieldErrors);
+      throw badRequest('Check the details you entered', fieldErrors(parsed.error));
     }
 
     // Checked before the transaction opens, so a slow lookup does not hold a
@@ -677,10 +678,10 @@ authRouter.post('/token/:purpose', async (req, res, next) => {
   try {
     const purpose = z.enum(['invite', 'reset']).parse(req.params.purpose);
     const parsed = z
-      .object({ token: z.string().min(10), password: passwordRule })
+      .object({ token: z.string().min(10), password: passwordRule }).strict()
       .safeParse(req.body);
     if (!parsed.success) {
-      throw badRequest('Check the password you entered', parsed.error.flatten().fieldErrors);
+      throw badRequest('Check the password you entered', fieldErrors(parsed.error));
     }
 
     // The same breach check the change-password form applies (NFR-SEC-002).
@@ -727,7 +728,7 @@ authRouter.post('/token/:purpose', async (req, res, next) => {
  */
 authRouter.post('/forgot-password', async (req, res, next) => {
   try {
-    const parsed = z.object({ email: z.string().email() }).safeParse(req.body);
+    const parsed = z.object({ email: z.string().email() }).strict().safeParse(req.body);
     const answer = {
       ok: true,
       message: 'If that address has an account, a reset link is on its way. It is valid for one hour.',
@@ -779,7 +780,7 @@ authRouter.post('/forgot-password', async (req, res, next) => {
 // holds it turns two-factor on. See docs/TWO-FACTOR.md.
 // =====================================================================
 
-const currentPassword = z.object({ currentPassword: z.string().min(1, 'Enter your password') });
+const currentPassword = z.object({ currentPassword: z.string().min(1, 'Enter your password') }).strict();
 
 async function confirmPassword(c: { query: Exec }, userId: string, password: string) {
   const rows = await c.query(
@@ -802,7 +803,7 @@ authRouter.post('/2fa/setup', requireAuth, async (req, res, next) => {
   try {
     const parsed = currentPassword.safeParse(req.body);
     if (!parsed.success) {
-      throw badRequest('Check the details you entered', parsed.error.flatten().fieldErrors);
+      throw badRequest('Check the details you entered', fieldErrors(parsed.error));
     }
 
     const secret = generateSecret();
@@ -829,7 +830,7 @@ authRouter.post('/2fa/enable', requireAuth, async (req, res, next) => {
   try {
     const parsed = secondFactor.safeParse(req.body);
     if (!parsed.success) {
-      throw badRequest('Check the code you entered', parsed.error.flatten().fieldErrors);
+      throw badRequest('Check the code you entered', fieldErrors(parsed.error));
     }
 
     const codes = generateRecoveryCodes();
@@ -890,7 +891,7 @@ authRouter.post('/2fa/disable', requireAuth, async (req, res, next) => {
   try {
     const parsed = currentPassword.merge(secondFactor).safeParse(req.body);
     if (!parsed.success) {
-      throw badRequest('Check the details you entered', parsed.error.flatten().fieldErrors);
+      throw badRequest('Check the details you entered', fieldErrors(parsed.error));
     }
     if (req.actor!.role === 'ADMINISTRATOR' && adminTwoFactorRequired()) {
       throw forbidden('Administrators must keep two-factor authentication on.');
@@ -956,10 +957,10 @@ authRouter.post('/2fa/reset/:userId', requireAdmin, async (req, res, next) => {
     const parsed = z
       .object({
         reason: z.string().trim().min(10, 'Say why, in at least 10 characters').max(500),
-      })
+      }).strict()
       .safeParse(req.body);
     if (!parsed.success) {
-      throw badRequest('Check the details you entered', parsed.error.flatten().fieldErrors);
+      throw badRequest('Check the details you entered', fieldErrors(parsed.error));
     }
     if (userId.data === req.actor!.userId) {
       throw forbidden('You cannot reset your own two-factor authentication. Ask another administrator.');
