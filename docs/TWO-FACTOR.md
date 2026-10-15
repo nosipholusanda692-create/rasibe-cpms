@@ -5,9 +5,9 @@ A second factor after the password: a six-digit code from an authenticator app
 ten single-use recovery codes when the phone is not to hand.
 
 The server side is complete and tested (`npm run test:2fa`, 78 checks). The
-client screens are not built yet. Until they are, nobody can enrol, so every
-account signs in with its password exactly as before, and the setting that
-makes it compulsory for administrators is off.
+web client has the screens (see "Web screens" below); the mobile app does not
+yet, so a person who turns it on signs in on the web only until it does. The
+setting that makes it compulsory for administrators is off.
 
 ## How it works
 
@@ -64,8 +64,27 @@ enrolment. They can reach `/api/auth/me`, sign-out, `/api/auth/2fa/setup` and
 cannot turn their own two-factor off. Other roles are not affected; for them it
 stays optional.
 
-Leave it off until the enrolment screens are deployed. Switched on before
-then, administrators would have no way to enrol.
+Leave it off until a build of the web client with the screens below is
+deployed. Switched on before then, administrators would have no way to enrol.
+
+## Web screens
+
+- **Sign in.** After a correct password for an account with two-factor, the
+  form asks for the code. A wrong code can be retried; an expired challenge
+  goes back to the password step with a message. Signing in with a recovery
+  code when three or fewer are left shows a warning until it is dismissed.
+- **Sign-in security** (`/account/security`, every role, under Account in the
+  menu). Turn on: password, then a QR code with the key underneath, then a
+  code from the app, then the ten recovery codes with download and copy. Done
+  stays disabled until the person ticks that they have saved them. Turn off:
+  password and a code, with a confirmation.
+- **Required.** While `REQUIRE_ADMIN_2FA` holds an administrator, every page
+  redirects to Sign-in security until they have enrolled.
+- **User accounts.** "Two-factor on" under the status, and a Reset 2FA button
+  on other people's accounts that asks for the reason.
+
+The mobile app sends only the password step. Until it has the code step, a
+consultant or client manager who turns two-factor on cannot sign in there.
 
 ## API, for the client screens
 

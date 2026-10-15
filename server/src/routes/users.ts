@@ -57,6 +57,7 @@ usersRouter.get('/', requireAdmin, async (req, res, next) => {
               u.last_login_at, u.created_at, u.locked_until,
               ur.role,
               (u.password_hash = '!') AS awaiting_first_sign_in,
+              (u.totp_enabled_at IS NOT NULL) AS two_factor_enabled,
               c.consultant_id,
               cc.client_id, cl.legal_name AS client_name,
               (SELECT max(t.expires_at) FROM account_token t

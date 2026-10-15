@@ -88,7 +88,7 @@ export async function loadSession(req: Request, _res: Response, next: NextFuncti
 }
 
 /** Says why, so the client can tell "signed out for inactivity" from "never signed in". */
-function notSignedIn(req: Request) {
+export function notSignedIn(req: Request) {
   return req.sessionIdle
     ? new AppError(
         401,
