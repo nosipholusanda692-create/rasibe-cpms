@@ -60,7 +60,11 @@ $env:MSYS2_ARG_CONV_EXCL = '*'
 # A subject alternative name is required: browsers stopped accepting the common
 # name on its own. Both names are listed so https://localhost and
 # https://127.0.0.1 are each valid.
-& $openssl req -x509 -newkey rsa:2048 -nodes `
+#
+# RSA 4096 signed with SHA-256, the strength the transport requirement names.
+# The digest is stated rather than left to the openssl build's default, which
+# older builds set to SHA-1.
+& $openssl req -x509 -newkey rsa:4096 -sha256 -nodes `
     -keyout $keyFile `
     -out $certFile `
     -days $Days `
