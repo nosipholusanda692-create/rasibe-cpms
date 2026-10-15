@@ -144,13 +144,13 @@ const lineSchema = z.object({
   isPublicHoliday: z.boolean().default(false),
   isLeave: z.boolean().default(false),
   note: z.string().max(300).optional(),
-});
+}).strict();
 
 /** Saves the week without submitting it. Permitted only while it is a draft. */
 timesheetsRouter.put('/:id/lines', requireAuth, async (req, res, next) => {
   try {
     const id = z.string().uuid().parse(req.params.id);
-    const b = z.object({ lines: z.array(lineSchema) }).parse(req.body);
+    const b = z.object({ lines: z.array(lineSchema) }).strict().parse(req.body);
 
     const out = await withActor(req.actor!, async (c) => {
       const t = await c.query(`SELECT * FROM timesheet WHERE timesheet_id = $1`, [id]);
@@ -245,7 +245,7 @@ timesheetsRouter.post('/:id/decision', requireAuth, async (req, res, next) => {
     const b = z.object({
       decision: z.enum(['APPROVE', 'REJECT']),
       reason: z.string().optional(),
-    }).parse(req.body);
+    }).strict().parse(req.body);
 
     if (b.decision === 'REJECT' && (b.reason ?? '').trim().length < 5) {
       throw badRequest('Give a reason of at least five characters so the week can be corrected (BR-005).');
@@ -301,7 +301,7 @@ timesheetsRouter.post('/:id/decision', requireAuth, async (req, res, next) => {
 timesheetsRouter.post('/:id/override', requireAdmin, async (req, res, next) => {
   try {
     const id = z.string().uuid().parse(req.params.id);
-    const b = z.object({ reason: z.string().min(5, 'Give a reason for the override') }).parse(req.body);
+    const b = z.object({ reason: z.string().min(5, 'Give a reason for the override') }).strict().parse(req.body);
 
     const out = await withActor(req.actor!, async (c) => {
       const r = await c.query(
@@ -340,7 +340,10 @@ timesheetsRouter.post('/sync', requireAuth, async (req, res, next) => {
       rowVersion: z.number().int().min(0).default(0),
       submit: z.boolean().default(true),
       lines: z.array(lineSchema),
-    }).parse(req.body);
+      // The web client sends its whole queue entry, and weeks already queued
+      // in browsers carry this, so it is accepted (and not used).
+      queuedAt: z.string().max(40).optional(),
+    }).strict().parse(req.body);
 
     const out = await withActor(req.actor!, async (c) => {
       // 1. has this exact submission already been accepted?

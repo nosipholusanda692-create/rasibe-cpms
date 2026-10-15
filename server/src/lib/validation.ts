@@ -46,6 +46,30 @@ export function enumList(values: readonly string[]) {
     });
 }
 
+/**
+ * Per-field messages for a refused body.
+ *
+ * Request bodies are .strict(): a field the schema does not name is refused
+ * rather than silently dropped, so a client cannot slip in something a later
+ * change might start reading (mass assignment). zod reports that against the
+ * object, not a field, and flatten() would put it where the screens never look,
+ * so each unexpected top-level field is named here.
+ */
+export function fieldErrors(error: z.ZodError): Record<string, string[]> {
+  const out: Record<string, string[]> = { ...error.flatten().fieldErrors } as Record<string, string[]>;
+  for (const issue of error.issues) {
+    if (issue.code === 'unrecognized_keys' && issue.path.length === 0) {
+      for (const key of issue.keys) (out[key] ??= []).push('This field is not accepted');
+    }
+  }
+  return out;
+}
+
+/** A body that is at most an optional audit reason, for actions that need nothing else. */
+export const optionalReason = z.object({
+  reason: z.string().trim().min(1).max(500).optional(),
+}).strict();
+
 // The values of the database enums the routes filter on (db/01_schema.sql).
 export const ROLES = ['ADMINISTRATOR', 'RECRUITER', 'CONSULTANT', 'CLIENT_MANAGER'] as const;
 export const SENIORITY = ['JUNIOR', 'INTERMEDIATE', 'SENIOR', 'LEAD', 'PRINCIPAL'] as const;

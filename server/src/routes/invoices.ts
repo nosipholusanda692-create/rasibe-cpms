@@ -78,7 +78,7 @@ invoicesRouter.post('/prepare', requireAdmin, async (req, res, next) => {
       clientId: z.string().uuid(),
       periodStart: z.string(),
       periodEnd: z.string(),
-    }).parse(req.body);
+    }).strict().parse(req.body);
 
     const out = await withActor(req.actor!, async (c) => {
       const approved = await c.query(
@@ -247,7 +247,7 @@ invoicesRouter.post('/:id/issue', requireAdmin, async (req, res, next) => {
 invoicesRouter.post('/:id/credit-note', requireAdmin, async (req, res, next) => {
   try {
     const id = z.string().uuid().parse(req.params.id);
-    const b = z.object({ reason: z.string().min(5, 'Give a reason for the credit note') }).parse(req.body);
+    const b = z.object({ reason: z.string().min(5, 'Give a reason for the credit note') }).strict().parse(req.body);
 
     const out = await withActor(req.actor!, async (c) => {
       const orig = await c.query(`SELECT * FROM invoice WHERE invoice_id = $1`, [id]);
@@ -314,7 +314,7 @@ invoicesRouter.post('/:id/export', requireAdmin, async (req, res, next) => {
 invoicesRouter.post('/:id/payment', requireAdmin, async (req, res, next) => {
   try {
     const id = z.string().uuid().parse(req.params.id);
-    const b = z.object({ amount: z.number().min(0) }).parse(req.body);
+    const b = z.object({ amount: z.number().min(0) }).strict().parse(req.body);
     const rows = await query<any>(req.actor!,
       `UPDATE invoice SET amount_paid = amount_paid + $2 WHERE invoice_id = $1 RETURNING *`,
       [id, b.amount]);

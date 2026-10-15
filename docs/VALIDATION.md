@@ -7,9 +7,21 @@ what it may be, not what it may not be.
 
 **Request bodies.** Every route parses `req.body` with a zod schema before
 reading it. Fields are typed, options are restricted to known values with
-`z.enum`, and fields the schema does not name are dropped, so nothing the
-client invents reaches a query. A value longer than its column allows is
-refused by the database and answered with a 400 (below).
+`z.enum`, and every body schema is `.strict()`: a field the schema does not
+name, at the top level or inside a list item, is refused with a 400 that
+names it ("This field is not accepted"), rather than silently dropped. Dropping
+was safe only as long as no later change started reading the extra field;
+refusing it closes mass assignment for good and tells a buggy client what it
+got wrong. A value longer than its column allows is refused by the database
+and answered with a 400 (below).
+
+Before this was switched on, every write the web and mobile clients make was
+checked against its schema. One sent more than its schema named: the web
+client's offline sync posts the whole queued week, including `queuedAt`, and
+weeks already sitting in browsers carry it. The sync schema therefore accepts
+`queuedAt` (and ignores it). Three actions that read an optional `reason`
+without any schema (re-sending an invitation, recording consent, approving
+rates) now parse it with `optionalReason`: text, at most 500 characters.
 
 **Query strings.** The shared rules in `server/src/lib/validation.ts`:
 
@@ -63,6 +75,9 @@ including a credit note's negative amounts, are left as numbers.
 
 `npm test`, section "Input validation on query strings": malformed numbers,
 dates, options, lists, flags and over-long searches are each refused with 400,
-and the valid forms the screens send still work. Section "CSV export" checks
+and the valid forms the screens send still work. Section "Unknown fields in
+request bodies" checks that an extra field is refused and named, at the top
+level and inside a list, that a queued web week still syncs, and that a
+non-text reason is refused. Section "CSV export" checks
 quoting, formula neutralising and a real credit-note export. `src/test/e2e.ts` drives the
 same requests the web client makes.

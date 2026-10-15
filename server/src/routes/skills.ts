@@ -27,7 +27,7 @@ skillsRouter.post('/', requireInternal, async (req, res, next) => {
     const b = z.object({
       name: z.string().min(1, 'Enter a skill name'),
       category: z.string().optional(),
-    }).parse(req.body);
+    }).strict().parse(req.body);
     const rows = await query(
       req.actor!,
       `INSERT INTO skill (name, category) VALUES ($1,$2) RETURNING *`,

@@ -8,6 +8,7 @@ import hpp from 'hpp';
 
 import { loadSession, requireAdminTwoFactor } from './middleware/auth.js';
 import { AppError, translateDbError } from './lib/errors.js';
+import { fieldErrors } from './lib/validation.js';
 import { logServerError, newErrorId } from './lib/logging.js';
 import { createHttpsServer } from './lib/https.js';
 import { csrf } from './lib/csrf.js';
@@ -163,7 +164,7 @@ export function createApp() {
     if (err instanceof AppError) {
       e = err;
     } else if (err?.name === 'ZodError') {
-      e = new AppError(400, 'Check the details you entered', 'bad_request', err.flatten?.().fieldErrors);
+      e = new AppError(400, 'Check the details you entered', 'bad_request', fieldErrors(err));
     } else if (err?.type === 'entity.too.large') {
       // The body limit is a rejection, not a fault: it must not become a 5xx.
       e = new AppError(413, 'That request is too large.', 'payload_too_large');

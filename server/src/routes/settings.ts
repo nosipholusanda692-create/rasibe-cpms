@@ -19,7 +19,7 @@ settingsRouter.put('/:key', requireAdmin, async (req, res, next) => {
   try {
     assertCapability(req.actor!.role, 'manage_settings');
     const key = z.string().min(1).parse(req.params.key);
-    const b = z.object({ value: z.string() }).parse(req.body);
+    const b = z.object({ value: z.string() }).strict().parse(req.body);
     const rows = await query(req.actor!,
       `UPDATE system_setting SET setting_value = $2, updated_at = now(), updated_by = $3
         WHERE setting_key = $1 RETURNING *`,
