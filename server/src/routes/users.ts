@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { query, withActor } from '../lib/db.js';
 import { badRequest, notFound, conflict, assertCapability } from '../lib/errors.js';
 import { requireAdmin } from '../middleware/auth.js';
-import { ROLES, queryBool, searchText } from '../lib/validation.js';
+import { ROLES, queryBool, searchText, fieldErrors, optionalReason } from '../lib/validation.js';
 import { audit, queueNotification } from '../services/notify.js';
 
 export const usersRouter = Router();
@@ -106,7 +106,7 @@ const createBody = z.object({
   // A consultant account is linked to a pool record; a client manager to a contact.
   consultantId: z.string().uuid().optional(),
   contactId: z.string().uuid().optional(),
-});
+}).strict();
 
 /**
  * FR-AUT-001 and FR-AUT-010.
@@ -121,7 +121,7 @@ usersRouter.post('/', requireAdmin, async (req, res, next) => {
     assertCapability(req.actor!.role, 'manage_users');
     const parsed = createBody.safeParse(req.body);
     if (!parsed.success) {
-      throw badRequest('Check the details you entered', parsed.error.flatten().fieldErrors);
+      throw badRequest('Check the details you entered', fieldErrors(parsed.error));
     }
     const b = parsed.data;
 
@@ -215,6 +215,7 @@ usersRouter.post('/:id/invite', requireAdmin, async (req, res, next) => {
   try {
     assertCapability(req.actor!.role, 'manage_users');
     const id = z.string().uuid().parse(req.params.id);
+    const body = optionalReason.parse(req.body ?? {});
     const { plain, hash } = newToken();
 
     const out = await withActor(req.actor!, async (c) => {
@@ -241,7 +242,7 @@ usersRouter.post('/:id/invite', requireAdmin, async (req, res, next) => {
         action: 'USER_INVITED',
         entityTable: 'app_user',
         entityId: id,
-        reason: req.body?.reason ?? 'Invitation reissued',
+        reason: body.reason ?? 'Invitation reissued',
       });
       return u.rows[0];
     });
@@ -262,7 +263,7 @@ usersRouter.post('/:id/status', requireAdmin, async (req, res, next) => {
     const b = z.object({
       isActive: z.boolean(),
       reason: z.string().min(5, 'Give a reason of at least five characters'),
-    }).parse(req.body);
+    }).strict().parse(req.body);
 
     if (id === req.actor!.userId && !b.isActive) {
       throw badRequest('You cannot suspend your own account.');
@@ -305,7 +306,7 @@ usersRouter.post('/:id/role', requireAdmin, async (req, res, next) => {
     const b = z.object({
       role: z.enum(['ADMINISTRATOR', 'RECRUITER', 'CONSULTANT', 'CLIENT_MANAGER']),
       reason: z.string().min(5, 'Give a reason of at least five characters'),
-    }).parse(req.body);
+    }).strict().parse(req.body);
 
     if (id === req.actor!.userId && b.role !== 'ADMINISTRATOR') {
       throw badRequest('You cannot remove your own administrator role. Ask another administrator.');

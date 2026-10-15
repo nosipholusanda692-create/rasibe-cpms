@@ -8,7 +8,7 @@ import { audit } from '../services/notify.js';
 // Reads need nothing here: project() decrypts on the way out.
 import { encrypt, blindIndex } from '../lib/crypto.js';
 import { saIdNumber } from '../lib/identity.js';
-import { AVAILABILITY, SENIORITY, isoDate, queryInt, searchText } from '../lib/validation.js';
+import { AVAILABILITY, SENIORITY, isoDate, queryInt, searchText, fieldErrors, optionalReason } from '../lib/validation.js';
 
 export const consultantsRouter = Router();
 
@@ -206,14 +206,14 @@ const consultantBody = z.object({
   availableFrom: z.string().optional().nullable(),
   minPayRate: z.number().min(0).optional(),
   preferredPayRate: z.number().min(0).optional(),
-});
+}).strict();
 
 consultantsRouter.post('/', requireInternal, async (req, res, next) => {
   try {
     assertCapability(req.actor!.role, 'manage_consultants');
     const parsed = consultantBody.safeParse(req.body);
     if (!parsed.success) {
-      throw badRequest('Check the details you entered', parsed.error.flatten().fieldErrors);
+      throw badRequest('Check the details you entered', fieldErrors(parsed.error));
     }
     const b = parsed.data;
     if (b.availability === 'AVAILABLE_FROM' && !b.availableFrom) {
@@ -302,6 +302,7 @@ consultantsRouter.patch('/:id', requireAuth, async (req, res, next) => {
 consultantsRouter.post('/:id/consent', requireInternal, async (req, res, next) => {
   try {
     const id = z.string().uuid().parse(req.params.id);
+    const body = optionalReason.parse(req.body ?? {});
     const rows = await withActor(req.actor!, async (c) => {
       const r = await c.query(
         `UPDATE consultant SET consent_recorded_at = now()
@@ -314,7 +315,7 @@ consultantsRouter.post('/:id/consent', requireInternal, async (req, res, next) =
         action: 'CONSENT_RECORDED',
         entityTable: 'consultant',
         entityId: id,
-        reason: req.body?.reason ?? 'Consent to disclosure recorded',
+        reason: body.reason ?? 'Consent to disclosure recorded',
       });
       return r.rows;
     });
@@ -334,8 +335,8 @@ consultantsRouter.put('/:id/skills', requireInternal, async (req, res, next) => 
         years: z.number().min(0).optional(),
         lastUsedYear: z.number().optional(),
         isPrimary: z.boolean().optional(),
-      })),
-    }).parse(req.body);
+      }).strict()),
+    }).strict().parse(req.body);
 
     const rows = await withActor(req.actor!, async (c) => {
       await c.query(`DELETE FROM consultant_skill WHERE consultant_id = $1`, [id]);
