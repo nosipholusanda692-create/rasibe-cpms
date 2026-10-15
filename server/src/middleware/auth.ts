@@ -9,6 +9,8 @@ declare global {
       actor?: Actor;
       sessionId?: string;
       twoFactorEnabled?: boolean;
+      /** The cookie named a session that had just ended through inactivity. */
+      sessionIdle?: boolean;
     }
   }
 }
@@ -16,11 +18,28 @@ declare global {
 export const SESSION_COOKIE = 'rasibe_session';
 
 /**
+ * Minutes without a request before a session ends, whatever its absolute
+ * expiry. Read per request so a changed setting applies without a restart.
+ */
+export function idleMinutes(): number {
+  const n = Number(process.env.SESSION_IDLE_MINUTES ?? 30);
+  return Number.isFinite(n) && n > 0 ? n : 30;
+}
+
+/** How stale last_seen_at may get before it is written again. */
+const TOUCH_SECONDS = 60;
+
+/**
  * Resolves the session cookie to an actor.
  *
  * The role is read from the database on every request rather than carried in
  * the cookie, so revoking a role takes effect immediately and a tampered
  * cookie cannot elevate anybody.
+ *
+ * A session left unused for idleMinutes() is revoked here rather than merely
+ * ignored, so raising the setting later cannot bring it back. Use moves
+ * last_seen_at forward, at most once a minute so that every request is not
+ * also a write.
  */
 export async function loadSession(req: Request, _res: Response, next: NextFunction) {
   const sid = req.cookies?.[SESSION_COOKIE];
@@ -32,8 +51,12 @@ export async function loadSession(req: Request, _res: Response, next: NextFuncti
       role: Role;
       is_active: boolean;
       two_factor: boolean;
+      idle: boolean;
+      stale: boolean;
     }>(
-      `SELECT s.user_id, ur.role, u.is_active, u.totp_enabled_at IS NOT NULL AS two_factor
+      `SELECT s.user_id, ur.role, u.is_active, u.totp_enabled_at IS NOT NULL AS two_factor,
+              s.last_seen_at <= now() - ($2::int * interval '1 minute') AS idle,
+              s.last_seen_at <= now() - ($3::int * interval '1 second') AS stale
          FROM user_session s
          JOIN app_user u ON u.user_id = s.user_id
          JOIN user_role ur ON ur.user_id = s.user_id
@@ -41,12 +64,22 @@ export async function loadSession(req: Request, _res: Response, next: NextFuncti
           AND s.revoked_at IS NULL
           AND s.expires_at > now()
         LIMIT 1`,
-      [sid],
+      [sid, idleMinutes(), TOUCH_SECONDS],
     );
-    if (rows.length && rows[0].is_active) {
-      req.actor = { userId: rows[0].user_id, role: rows[0].role };
+    const row = rows[0];
+    if (row?.idle) {
+      await anonQuery(
+        `UPDATE user_session SET revoked_at = now() WHERE session_id = $1 AND revoked_at IS NULL`,
+        [sid],
+      );
+      req.sessionIdle = true;
+    } else if (row?.is_active) {
+      if (row.stale) {
+        await anonQuery(`UPDATE user_session SET last_seen_at = now() WHERE session_id = $1`, [sid]);
+      }
+      req.actor = { userId: row.user_id, role: row.role };
       req.sessionId = sid;
-      req.twoFactorEnabled = rows[0].two_factor;
+      req.twoFactorEnabled = row.two_factor;
     }
   } catch {
     // an unreadable session is simply no session
@@ -54,14 +87,25 @@ export async function loadSession(req: Request, _res: Response, next: NextFuncti
   next();
 }
 
+/** Says why, so the client can tell "signed out for inactivity" from "never signed in". */
+function notSignedIn(req: Request) {
+  return req.sessionIdle
+    ? new AppError(
+        401,
+        `You were signed out after ${idleMinutes()} minutes without activity. Sign in again.`,
+        'session_idle',
+      )
+    : unauthorised();
+}
+
 export function requireAuth(req: Request, _res: Response, next: NextFunction) {
-  if (!req.actor) return next(unauthorised());
+  if (!req.actor) return next(notSignedIn(req));
   next();
 }
 
 export function requireRole(...roles: Role[]) {
   return (req: Request, _res: Response, next: NextFunction) => {
-    if (!req.actor) return next(unauthorised());
+    if (!req.actor) return next(notSignedIn(req));
     if (!roles.includes(req.actor.role)) return next(forbidden());
     next();
   };

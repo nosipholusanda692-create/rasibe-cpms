@@ -87,7 +87,10 @@ CREATE TABLE user_session (
   issued_at   timestamptz NOT NULL DEFAULT now(),
   expires_at  timestamptz NOT NULL,
   revoked_at  timestamptz,
-  ip_address  varchar(64)
+  ip_address  varchar(64),
+  -- Moved forward by use, at most once a minute. A session unused for
+  -- SESSION_IDLE_MINUTES ends even though expires_at has not been reached.
+  last_seen_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX ix_session_user ON user_session(user_id);
 
