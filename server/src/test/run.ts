@@ -1304,6 +1304,68 @@ async function main() {
     await clearAttempts();
 
     // -----------------------------------------------------------------
+    section('Idle session timeout');
+    // -----------------------------------------------------------------
+    // The clock is moved by rewriting last_seen_at, which is what thirty
+    // minutes away from the keyboard would do.
+    const idler = new Client('idler');
+    await idler.login('nosipho@rasibe.co.za');
+    const idleSid = idler.cookies.get('rasibe_session') ?? '';
+    const seen = (sid: string) => anonQuery<{ last_seen_at: Date; revoked_at: Date | null }>(
+      `SELECT last_seen_at, revoked_at FROM user_session WHERE session_id = $1`, [sid]);
+    const backdate = (sid: string, minutes: number) => anonQuery(
+      `UPDATE user_session SET last_seen_at = now() - ($2::int * interval '1 second') WHERE session_id = $1`,
+      [sid, Math.round(minutes * 60)]);
+
+    await backdate(idleSid, 29);
+    check('a session used within the idle limit keeps working',
+      (await idler.get('/auth/me')).status === 200);
+    const touched = (await seen(idleSid))[0];
+    check('using it moves the idle clock forward',
+      Date.now() - new Date(touched.last_seen_at).getTime() < 60_000, touched.last_seen_at);
+
+    await backdate(idleSid, 10 / 60);
+    const seenBefore = (await seen(idleSid))[0].last_seen_at;
+    await idler.get('/auth/me');
+    const seenAfter = (await seen(idleSid))[0].last_seen_at;
+    check('a request within the same minute does not write again',
+      new Date(seenBefore).getTime() === new Date(seenAfter).getTime(), { seenBefore, seenAfter });
+
+    await backdate(idleSid, 31);
+    const idleRefusal = await idler.get('/auth/me');
+    check('a session unused for thirty minutes is refused',
+      idleRefusal.status === 401 && idleRefusal.body?.error === 'session_idle', idleRefusal.body);
+    check('the refusal tells the person why',
+      /30 minutes without activity/.test(idleRefusal.body?.message ?? ''), idleRefusal.body?.message);
+    check('the idle session is revoked, not just ignored',
+      (await seen(idleSid))[0].revoked_at !== null);
+    await backdate(idleSid, 0);
+    check('and cannot be brought back by fresh activity',
+      (await idler.get('/auth/me')).status === 401);
+    const idleWrite = await idler.post('/auth/change-password', {
+      currentPassword: 'Password123!', newPassword: 'Fixture-Idle-2026x',
+    });
+    check('a write with the idle session is refused too', idleWrite.status === 401, idleWrite);
+
+    const savedIdle = process.env.SESSION_IDLE_MINUTES;
+    process.env.SESSION_IDLE_MINUTES = '5';
+    try {
+      const shortIdle = new Client('short idle');
+      await shortIdle.login('nosipho@rasibe.co.za');
+      await backdate(shortIdle.cookies.get('rasibe_session') ?? '', 6);
+      check('SESSION_IDLE_MINUTES sets the limit',
+        (await shortIdle.get('/auth/me')).body?.error === 'session_idle');
+    } finally {
+      if (savedIdle === undefined) delete process.env.SESSION_IDLE_MINUTES;
+      else process.env.SESSION_IDLE_MINUTES = savedIdle;
+    }
+
+    const returning = new Client('returning');
+    await returning.login('nosipho@rasibe.co.za');
+    check('signing in again after an idle timeout works',
+      (await returning.get('/auth/me')).status === 200);
+
+    // -----------------------------------------------------------------
     section('Per-address throttle (FR-AUT-009)');
     // -----------------------------------------------------------------
     // Last on purpose. It deliberately exhausts the budget for 127.0.0.1,
