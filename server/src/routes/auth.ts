@@ -419,7 +419,7 @@ const RESET_HOURS = 1;
 const digest = (token: string) => createHash('sha256').update(token).digest();
 
 /** The password rule, kept in one place so both flows and the change form agree. */
-const passwordRule = z
+export const passwordRule = z
   .string()
   .min(10, 'Use at least 10 characters')
   .regex(/[A-Z]/, 'Include an upper case letter')

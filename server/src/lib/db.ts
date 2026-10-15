@@ -17,14 +17,16 @@ const { Pool } = pg;
  * An unrecognised mode is treated as the stricter one. A typo should fail
  * loudly rather than quietly leave the connection unverified.
  */
-function sslSetting(): false | { rejectUnauthorized: boolean; ca?: string } {
+export function sslSetting(): false | { rejectUnauthorized: boolean; ca?: string } {
   const mode = process.env.PGSSLMODE;
   if (!mode || mode === 'disable') return false;
 
+  // 'system' means the platform's own trust store, as it does for libpq 16, so
+  // pg_dump and this process can share one setting.
   const rootCert = process.env.PGSSLROOTCERT;
   return {
     rejectUnauthorized: mode !== 'require',
-    ca: rootCert ? readFileSync(rootCert, 'utf8') : undefined,
+    ca: rootCert && rootCert !== 'system' ? readFileSync(rootCert, 'utf8') : undefined,
   };
 }
 

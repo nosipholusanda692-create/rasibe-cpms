@@ -5,6 +5,7 @@ import { mkdir, readdir, readFile, stat, unlink, writeFile } from 'node:fs/promi
 import path from 'node:path';
 import pg from 'pg';
 import { blindIndex, decrypt, loadKey } from './crypto.js';
+import { sslSetting } from './db.js';
 
 /**
  * Backup and restore (RCP-16, NFR-REL-003).
@@ -81,6 +82,7 @@ function client(conn: OwnerConnection, database = conn.database): pg.Client {
     user: conn.user,
     password: conn.password,
     database,
+    ssl: sslSetting(),
   });
 }
 
