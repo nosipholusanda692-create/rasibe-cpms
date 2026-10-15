@@ -2,12 +2,13 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { query } from '../lib/db.js';
 import { requireAuth } from '../middleware/auth.js';
+import { queryBool } from '../lib/validation.js';
 
 export const notificationsRouter = Router();
 
 notificationsRouter.get('/', requireAuth, async (req, res, next) => {
   try {
-    const q = z.object({ unreadOnly: z.coerce.boolean().optional() }).parse(req.query);
+    const q = z.object({ unreadOnly: queryBool(false) }).parse(req.query);
     const rows = await query(
       req.actor!,
       `SELECT notification_id, event, subject, body, related_table, related_id,

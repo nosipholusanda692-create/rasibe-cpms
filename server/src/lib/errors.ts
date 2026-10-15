@@ -72,6 +72,14 @@ export function translateDbError(err: any): AppError {
   if (code === '23503') return badRequest('That referenced record does not exist.');
   if (code === '42501') return forbidden(message.replace(/^.*?:\s*/, ''));
 
+  // Class 22 is PostgreSQL refusing a value: text where a number or date was
+  // expected, an unknown option, a number too large for its column. The input
+  // was wrong, not the server, so it is a 400. Routes validate first; this is
+  // the backstop for anything that slips past them.
+  if (code === '22001') return badRequest('One of the values you entered is too long.');
+  if (code === '22003') return badRequest('One of the numbers you entered is too large.');
+  if (code?.startsWith('22')) return badRequest('One of the values you entered is not in the right format.');
+
   return new AppError(500, 'Unexpected database error', 'db_error',
     process.env.NODE_ENV === 'production' ? undefined : message);
 }

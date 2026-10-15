@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { query, withActor } from '../lib/db.js';
 import { badRequest, notFound, conflict, forbidden, project, assertCapability } from '../lib/errors.js';
 import { requireAuth, requireInternal, requireAdmin } from '../middleware/auth.js';
+import { PLACEMENT_STATUS, REQUEST_STATUS, enumList, queryInt, searchText } from '../lib/validation.js';
 import { audit, queueNotification } from '../services/notify.js';
 
 export const requestsRouter = Router();
@@ -14,9 +15,9 @@ export const placementsRouter = Router();
 requestsRouter.get('/', requireAuth, async (req, res, next) => {
   try {
     const q = z.object({
-      status: z.string().optional(),
+      status: enumList(REQUEST_STATUS).optional(),
       clientId: z.string().uuid().optional(),
-      search: z.string().optional(),
+      search: searchText.optional(),
     }).parse(req.query);
 
     const params: unknown[] = [];
@@ -360,10 +361,10 @@ requestsRouter.patch('/submissions/:sid', requireAuth, async (req, res, next) =>
 placementsRouter.get('/', requireAuth, async (req, res, next) => {
   try {
     const q = z.object({
-      status: z.string().optional(),
+      status: enumList(PLACEMENT_STATUS).optional(),
       clientId: z.string().uuid().optional(),
       consultantId: z.string().uuid().optional(),
-      endingWithinDays: z.coerce.number().optional(),
+      endingWithinDays: queryInt(0, 3650).optional(),
     }).parse(req.query);
 
     const params: unknown[] = [];

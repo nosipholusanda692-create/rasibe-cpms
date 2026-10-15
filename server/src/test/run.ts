@@ -13,6 +13,7 @@ import { anonQuery, closePool, withActor, type Actor } from '../lib/db.js';
 import { TLS_CIPHERS } from '../lib/https.js';
 import { bankAccountRef, isValidSaIdNumber, saIdNumber } from '../lib/identity.js';
 import { logServerError } from '../lib/logging.js';
+import { translateDbError } from '../lib/errors.js';
 import {
   hashPassword, isArgon2, isPeppered, needsRehash, PASSWORD_OPTIONS, PEPPER_MARK, verifyPassword,
 } from '../lib/passwords.js';
@@ -1302,6 +1303,68 @@ async function main() {
       rangeServer.close();
     }
     await clearAttempts();
+
+    // -----------------------------------------------------------------
+    section('Input validation on query strings');
+    // -----------------------------------------------------------------
+    // A malformed value must be told what is wrong (400), not reach the
+    // database and come back as "something went wrong" (500).
+    const checker = new Client('validation admin');
+    await checker.login('christinah@rasibe.co.za');
+    const worker = new Client('validation consultant');
+    await worker.login('thabo.m@example.co.za');
+
+    const badDays = await checker.get('/reports/placements-ending?days=abc');
+    check('a number that is not a number is a 400, not a 500',
+      badDays.status === 400 && badDays.body?.detail?.days !== undefined, badDays);
+    check('a valid number still works',
+      (await checker.get('/reports/placements-ending?days=90')).status === 200);
+    check('a fractional page number is refused',
+      (await checker.get('/consultants?page=1.5')).status === 400);
+
+    const badWeek = await worker.get('/timesheets/my/current?weekStart=banana');
+    check('a date that is not a date is a 400', badWeek.status === 400, badWeek);
+    check('a date that does not exist is a 400',
+      (await worker.get('/timesheets/my/current?weekStart=2026-02-30')).status === 400);
+    check('a real date still works',
+      (await worker.get('/timesheets/my/current?weekStart=2026-10-12')).status === 200);
+
+    const badSeniority = await checker.get('/consultants?seniority=WIZARD');
+    check('an option that does not exist is a 400', badSeniority.status === 400, badSeniority);
+    check('a list with one unknown status is a 400',
+      (await checker.get('/requests?status=OPEN,BOGUS')).status === 400);
+    check('a list of known statuses still works',
+      (await checker.get('/requests?status=OPEN,SHORTLISTING,INTERVIEWING')).status === 200);
+    check('an over-long search is refused',
+      (await checker.get(`/consultants?search=${'x'.repeat(201)}`)).status === 400);
+
+    // z.coerce.boolean() made "false" mean true, because Boolean("false") is.
+    await anonQuery(
+      `WITH u AS (
+         INSERT INTO app_user (email, full_name, password_hash, is_active) VALUES ($1, $2, '!', false)
+         RETURNING user_id)
+       INSERT INTO user_role (user_id, role) SELECT user_id, 'RECRUITER' FROM u`,
+      ['inactive.fixture@example.co.za', 'Inactive Fixture'],
+    );
+    const activeOnly = await checker.get('/users?includeInactive=false');
+    check('includeInactive=false leaves out suspended accounts',
+      activeOnly.status === 200 && activeOnly.body.items.every((u: any) => u.is_active),
+      activeOnly.body?.items?.filter((u: any) => !u.is_active).map((u: any) => u.email));
+    const everyone = await checker.get('/users');
+    check('and by default they are included',
+      everyone.body.items.some((u: any) => u.email === 'inactive.fixture@example.co.za'));
+    check('a flag that is neither true nor false is refused',
+      (await checker.get('/users?includeInactive=maybe')).status === 400);
+
+    // The backstop, for a value that reaches PostgreSQL unchecked.
+    check('a value PostgreSQL cannot read becomes a 400',
+      translateDbError({ code: '22P02', message: 'invalid input syntax for type uuid' }).status === 400);
+    check('a value too long for its column becomes a 400',
+      translateDbError({ code: '22001', message: 'value too long' }).status === 400);
+    check('a number too large for its column becomes a 400',
+      translateDbError({ code: '22003', message: 'numeric field overflow' }).status === 400);
+    check('a genuine fault is still a 500',
+      translateDbError({ code: '57P01', message: 'terminating connection' }).status === 500);
 
     // -----------------------------------------------------------------
     section('Idle session timeout');

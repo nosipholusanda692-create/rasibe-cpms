@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { query, withActor } from '../lib/db.js';
 import { badRequest, notFound, forbidden, conflict, project, assertCapability } from '../lib/errors.js';
 import { requireAuth, requireAdmin } from '../middleware/auth.js';
+import { TIMESHEET_STATUS, enumList, isoDate, queryBool } from '../lib/validation.js';
 import { audit, queueNotification } from '../services/notify.js';
 
 export const timesheetsRouter = Router();
@@ -26,10 +27,10 @@ function addDays(iso: string, n: number): string {
 timesheetsRouter.get('/', requireAuth, async (req, res, next) => {
   try {
     const q = z.object({
-      status: z.string().optional(),
+      status: enumList(TIMESHEET_STATUS).optional(),
       placementId: z.string().uuid().optional(),
-      weekStart: z.string().optional(),
-      outstanding: z.coerce.boolean().optional(),
+      weekStart: isoDate.optional(),
+      outstanding: queryBool(false),
     }).parse(req.query);
 
     const params: unknown[] = [];
@@ -97,7 +98,8 @@ timesheetsRouter.get('/:id', requireAuth, async (req, res, next) => {
 timesheetsRouter.get('/my/current', requireAuth, async (req, res, next) => {
   try {
     if (req.actor!.role !== 'CONSULTANT') throw forbidden('Only a consultant has a timesheet of their own');
-    const ws = req.query.weekStart ? String(req.query.weekStart) : weekStart(new Date());
+    const asked = z.object({ weekStart: isoDate.optional() }).parse(req.query).weekStart;
+    const ws = asked ?? weekStart(new Date());
 
     const out = await withActor(req.actor!, async (c) => {
       const placements = await c.query(

@@ -3,13 +3,14 @@ import { z } from 'zod';
 import { query, withActor } from '../lib/db.js';
 import { badRequest, notFound, project, assertCapability } from '../lib/errors.js';
 import { requireAuth, requireInternal } from '../middleware/auth.js';
+import { searchText } from '../lib/validation.js';
 
 export const clientsRouter = Router();
 
 /** Row-level security limits a client manager to their own company (BR-013). */
 clientsRouter.get('/', requireAuth, async (req, res, next) => {
   try {
-    const q = z.object({ search: z.string().optional() }).parse(req.query);
+    const q = z.object({ search: searchText.optional() }).parse(req.query);
     const rows = await query<any>(
       req.actor!,
       `SELECT c.client_id, c.legal_name, c.trading_name, c.registration_number, c.vat_number,
