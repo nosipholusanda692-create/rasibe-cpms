@@ -34,7 +34,11 @@ to a minute longer than the limit, which is not a meaningful difference.
 A request with an idle session is answered `401` with
 `error: "session_idle"` and a message saying why, so the client can show
 "you were signed out after 30 minutes without activity" instead of a bare
-sign-in screen. Neither client polls the server, so leaving a page open does
+sign-in screen. The web client does: whichever request meets the idle session,
+a page load or a form being saved, it returns to sign-in with that message.
+A write is answered the same way rather than with the CSRF refusal, because
+the CSRF token belongs to the session that has just ended. Neither client
+polls the server, so leaving a page open does
 not count as activity; if polling is added later, it should not go through a
 signed-in route or it will keep sessions alive indefinitely.
 

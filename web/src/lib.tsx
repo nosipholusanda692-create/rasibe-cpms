@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
+import React, { createContext, useContext, useEffect, useRef, useState, useCallback } from 'react';
 
 // =====================================================================
 // API client
@@ -34,10 +34,21 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   const data = text ? JSON.parse(text) : null;
 
   if (!res.ok) {
-    throw new ApiError(res.status, data?.message ?? 'Something went wrong', data?.error, data?.detail);
+    const error = new ApiError(res.status, data?.message ?? 'Something went wrong', data?.error, data?.detail);
+    // A 401 outside /auth means the session is gone (idle, signed out
+    // elsewhere, two-factor reset). Inside /auth it can also mean a wrong
+    // password or code on a form, so only /auth/me and an explicit
+    // session_idle count there. AuthProvider listens.
+    const sessionGone = data?.error === 'session_idle' || !path.startsWith('/auth/') || path === '/auth/me';
+    if (res.status === 401 && sessionGone) {
+      window.dispatchEvent(new CustomEvent(SESSION_ENDED, { detail: error }));
+    }
+    throw error;
   }
   return data as T;
 }
+
+const SESSION_ENDED = 'rasibe:session-ended';
 
 /** POSTs (so the CSRF header goes with it) and saves the response as a file. */
 async function download(path: string, filename: string): Promise<void> {
@@ -84,11 +95,21 @@ export interface CurrentUser {
   clients: { clientId: string; name: string }[];
 }
 
+export interface TwoFactorState {
+  enabled: boolean;
+  /** An administrator who must enrol before anything else will answer. */
+  required: boolean;
+}
+
 interface Me {
   user: CurrentUser;
   capabilities: string[];
   landing: string;
+  twoFactor?: TwoFactorState;
 }
+
+/** The first sign-in step either finishes, or asks for the code. */
+export type SignInResult = { landing: string } | { twoFactorRequired: true };
 
 // =====================================================================
 // Auth context
@@ -97,57 +118,109 @@ interface AuthValue {
   user: CurrentUser | null;
   capabilities: string[];
   landing: string;
+  twoFactor: TwoFactorState;
   loading: boolean;
+  /** Why the last session ended without the person signing out, for the sign-in page. */
+  endedReason: string | null;
+  /** A one-off message to show after signing in (recovery codes running low). */
+  notice: string | null;
+  clearNotice: () => void;
   can: (capability: string) => boolean;
-  signIn: (email: string, password: string) => Promise<string>;
+  signIn: (email: string, password: string) => Promise<SignInResult>;
+  verifyCode: (code: string) => Promise<string>;
+  reload: () => Promise<void>;
   signOut: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthValue | null>(null);
+const NO_TWO_FACTOR: TwoFactorState = { enabled: false, required: false };
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<CurrentUser | null>(null);
   const [capabilities, setCapabilities] = useState<string[]>([]);
   const [landing, setLanding] = useState('/dashboard');
+  const [twoFactor, setTwoFactor] = useState<TwoFactorState>(NO_TWO_FACTOR);
   const [loading, setLoading] = useState(true);
+  const [endedReason, setEndedReason] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const signedIn = useRef(false);
+
+  const apply = useCallback((me: Me | null) => {
+    signedIn.current = me !== null;
+    setUser(me?.user ?? null);
+    setCapabilities(me?.capabilities ?? []);
+    if (me) setLanding(me.landing);
+    setTwoFactor(me?.twoFactor ?? NO_TWO_FACTOR);
+  }, []);
 
   const load = useCallback(async () => {
     try {
-      const me = await api.get<Me>('/auth/me');
-      setUser(me.user);
-      setCapabilities(me.capabilities);
-      setLanding(me.landing);
-    } catch {
-      setUser(null);
-      setCapabilities([]);
+      apply(await api.get<Me>('/auth/me'));
+    } catch (e) {
+      // Reopening the tab after the idle limit lands here, not in the listener.
+      if (e instanceof ApiError && e.code === 'session_idle') setEndedReason(e.message);
+      apply(null);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [apply]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
-  const signIn = useCallback(async (email: string, password: string) => {
-    const r = await api.post<{ landing: string }>('/auth/login', { email, password });
-    const me = await api.get<Me>('/auth/me');
-    setUser(me.user);
-    setCapabilities(me.capabilities);
-    setLanding(me.landing);
+  useEffect(() => {
+    const onEnded = (ev: Event) => {
+      if (!signedIn.current) return; // not signed in: a 401 is expected, not news
+      const e = (ev as CustomEvent<ApiError>).detail;
+      setEndedReason(e.code === 'session_idle' ? e.message : 'Your session has ended. Sign in again.');
+      apply(null);
+    };
+    window.addEventListener(SESSION_ENDED, onEnded);
+    return () => window.removeEventListener(SESSION_ENDED, onEnded);
+  }, [apply]);
+
+  const finish = useCallback(async (r: { landing: string; recoveryCodesRemaining?: number }) => {
+    apply(await api.get<Me>('/auth/me'));
+    setEndedReason(null);
+    if (r.recoveryCodesRemaining !== undefined && r.recoveryCodesRemaining <= 3) {
+      setNotice(r.recoveryCodesRemaining === 0
+        ? 'You have used your last recovery code. Set up two-factor again under Sign-in security to get new ones.'
+        : `You have ${r.recoveryCodesRemaining} recovery code${r.recoveryCodesRemaining === 1 ? '' : 's'} left. Turn two-factor off and on again under Sign-in security to get a fresh set.`);
+    }
     return r.landing;
-  }, []);
+  }, [apply]);
+
+  const signIn = useCallback(async (email: string, password: string): Promise<SignInResult> => {
+    const r = await api.post<{ landing: string } | { twoFactorRequired: true }>('/auth/login', { email, password });
+    if ('twoFactorRequired' in r) return r;
+    return { landing: await finish(r) };
+  }, [finish]);
+
+  const verifyCode = useCallback(async (code: string) => {
+    const r = await api.post<{ landing: string; recoveryCodesRemaining?: number }>('/auth/login/verify', { code });
+    return finish(r);
+  }, [finish]);
+
+  const reload = useCallback(async () => {
+    apply(await api.get<Me>('/auth/me'));
+  }, [apply]);
 
   const signOut = useCallback(async () => {
     await api.post('/auth/logout');
-    setUser(null);
-    setCapabilities([]);
-  }, []);
+    setEndedReason(null);
+    setNotice(null);
+    apply(null);
+  }, [apply]);
 
   const can = useCallback((c: string) => capabilities.includes(c), [capabilities]);
+  const clearNotice = useCallback(() => setNotice(null), []);
 
   return (
-    <AuthContext.Provider value={{ user, capabilities, landing, loading, can, signIn, signOut }}>
+    <AuthContext.Provider value={{
+      user, capabilities, landing, twoFactor, loading, endedReason, notice, clearNotice,
+      can, signIn, verifyCode, reload, signOut,
+    }}>
       {children}
     </AuthContext.Provider>
   );

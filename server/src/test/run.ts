@@ -1477,6 +1477,16 @@ async function main() {
       else process.env.SESSION_IDLE_MINUTES = savedIdle;
     }
 
+    // A form left open past the limit: the first request after the gap is the
+    // save. Its CSRF token belongs to the dead session, which must not turn
+    // the idle message into "reload the page".
+    const formOpen = new Client('form left open');
+    await formOpen.login('nosipho@rasibe.co.za');
+    await backdate(formOpen.cookies.get('rasibe_session') ?? '', 31);
+    const lateSave = await formOpen.post('/skills', { name: 'Idle Fixture Skill' });
+    check('saving a form after the idle limit says the session went idle',
+      lateSave.status === 401 && lateSave.body?.error === 'session_idle', lateSave);
+
     const returning = new Client('returning');
     await returning.login('nosipho@rasibe.co.za');
     check('signing in again after an idle timeout works',

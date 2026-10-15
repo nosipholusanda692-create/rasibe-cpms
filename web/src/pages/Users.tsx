@@ -59,6 +59,23 @@ export default function Users() {
     }
   }
 
+  async function resetTwoFactor(u: any) {
+    const reason = window.prompt(
+      `Reset two-factor for ${u.full_name}? They will be signed out everywhere and must set it up again.\n\nReason (at least 10 characters):`);
+    if (!reason) return;
+    if (reason.trim().length < 10) {
+      setMsg({ kind: 'error', text: 'Give a reason of at least 10 characters.' });
+      return;
+    }
+    try {
+      await api.post(`/auth/2fa/reset/${u.user_id}`, { reason: reason.trim() });
+      setMsg({ kind: 'success', text: `Two-factor was reset for ${u.full_name}.` });
+      list.reload();
+    } catch (e) {
+      setMsg({ kind: 'error', text: e instanceof Error ? e.message : 'Could not reset two-factor' });
+    }
+  }
+
   return (
     <>
       {msg && <Alert kind={msg.kind}>{msg.text}</Alert>}
@@ -116,6 +133,7 @@ export default function Users() {
                             {u.invite_expires_at ? 'Invited' : 'No invitation'}
                           </span>
                         ) : <span className="pill pill-green">Active</span>}
+                      {u.two_factor_enabled && <div className="person-role">Two-factor on</div>}
                     </td>
                     <td className="right">
                       <div className="btn-row" style={{ justifyContent: 'flex-end' }}>
@@ -127,6 +145,9 @@ export default function Users() {
                         {u.user_id !== user?.userId && (
                           <>
                             <button className="btn btn-sm" onClick={() => changeRole(u)}>Role</button>
+                            {u.two_factor_enabled && (
+                              <button className="btn btn-sm" onClick={() => resetTwoFactor(u)}>Reset 2FA</button>
+                            )}
                             <button className={`btn btn-sm${u.is_active ? ' btn-danger' : ''}`}
                               onClick={() => setStatus(u, !u.is_active)}>
                               {u.is_active ? 'Suspend' : 'Reinstate'}

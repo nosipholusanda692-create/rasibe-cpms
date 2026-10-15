@@ -1,6 +1,7 @@
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { Request, Response, NextFunction } from 'express';
 import { AppError } from './errors.js';
+import { notSignedIn } from '../middleware/auth.js';
 
 export const CSRF_COOKIE = 'rasibe_csrf';
 export const CSRF_HEADER = 'x-csrf-token';
@@ -87,6 +88,10 @@ export function csrf(req: Request, res: Response, next: NextFunction) {
     }
     return next();
   }
+
+  // The token is bound to the session, so an idle one fails it too. Saying so
+  // beats "reload the page": nothing is written either way.
+  if (req.sessionIdle) return next(notSignedIn(req));
 
   if (originIsForeign(req)) {
     return next(new AppError(403, 'That request came from an unexpected address.', 'csrf_failed'));
