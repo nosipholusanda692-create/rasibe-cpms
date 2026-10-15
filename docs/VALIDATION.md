@@ -50,9 +50,19 @@ come from a fixed map, never from the request. Row-level security sits
 underneath, so even a query that went wrong would only see what the signed-in
 person may see.
 
+## CSV export
+
+The bookkeeper's export is opened in a spreadsheet, which brings its own
+injection: a cell beginning `=`, `+`, `-`, `@` or a tab is run as a formula
+(CWE-1236). `server/src/lib/csv.ts` quotes every text cell, doubles any quote
+inside it, and puts an apostrophe in front of text that begins with one of those
+characters, so a client named `=HYPERLINK(...)` is shown, not followed. Numbers,
+including a credit note's negative amounts, are left as numbers.
+
 ## Evidence
 
 `npm test`, section "Input validation on query strings": malformed numbers,
 dates, options, lists, flags and over-long searches are each refused with 400,
-and the valid forms the screens send still work. `src/test/e2e.ts` drives the
+and the valid forms the screens send still work. Section "CSV export" checks
+quoting, formula neutralising and a real credit-note export. `src/test/e2e.ts` drives the
 same requests the web client makes.
