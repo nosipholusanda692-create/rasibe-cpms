@@ -268,11 +268,25 @@ CREATE TABLE client_contact (
 );
 CREATE INDEX ix_contact_user ON client_contact(user_id);
 
+-- ISO 4217, limited to the currencies the business invoices in. Adding one is
+-- a row here, once invoices and tax for it are handled; until then any other
+-- code is refused by the foreign keys below. Reference data rather than seed:
+-- the column defaults depend on it.
+CREATE TABLE currency (
+  code        char(3) PRIMARY KEY,
+  name        varchar(60) NOT NULL,
+  minor_units smallint NOT NULL,
+  CONSTRAINT ck_currency_code CHECK (code ~ '^[A-Z]{3}$'),
+  CONSTRAINT ck_currency_minor CHECK (minor_units BETWEEN 0 AND 4)
+);
+INSERT INTO currency (code, name, minor_units) VALUES ('ZAR', 'South African rand', 2);
+
 CREATE TABLE rate_card (
   rate_card_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   client_id    uuid NOT NULL REFERENCES client_company(client_id) ON DELETE CASCADE,
   name         varchar(120) NOT NULL,
-  currency     char(3) NOT NULL DEFAULT 'ZAR',
+  currency     char(3) NOT NULL DEFAULT 'ZAR'
+               CONSTRAINT fk_rate_card_currency REFERENCES currency(code),
   effective_from date NOT NULL,
   effective_to date,
   is_active    boolean NOT NULL DEFAULT true,
@@ -447,7 +461,8 @@ CREATE TABLE invoice (
   period_start   date NOT NULL,
   period_end     date NOT NULL,
   status         invoice_status_enum NOT NULL DEFAULT 'DRAFT',
-  currency       char(3) NOT NULL DEFAULT 'ZAR',
+  currency       char(3) NOT NULL DEFAULT 'ZAR'
+                 CONSTRAINT fk_invoice_currency REFERENCES currency(code),
   subtotal       numeric(14,2) NOT NULL DEFAULT 0,
   vat_rate       numeric(5,2) NOT NULL DEFAULT 0,  -- business not VAT registered (client decision)
   vat_amount     numeric(14,2) NOT NULL DEFAULT 0,

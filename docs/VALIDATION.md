@@ -26,6 +26,13 @@ string `"false"` is truthy, so `?includeInactive=false` used to mean true.
 
 **Identifiers.** Every id in a path or query is checked as a UUID.
 
+**Currency.** ISO 4217, as an allow-list in the database: `rate_card.currency`
+and `invoice.currency` reference the `currency` table, which holds only the
+currencies the business invoices in (ZAR today). Any other code is refused
+with "That currency is not supported". Adding one is a row in that table,
+once invoices and tax for it are handled; the format check alone would accept
+`XYZ`, which is why the list is the control rather than the pattern.
+
 **The database.** Column types, `CHECK` constraints, enums and triggers refuse
 anything the application let through. `translateDbError` turns those refusals
 into a message: a business rule becomes its own sentence, and a value
