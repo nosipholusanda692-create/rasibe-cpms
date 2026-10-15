@@ -6,7 +6,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import hpp from 'hpp';
 
-import { loadSession } from './middleware/auth.js';
+import { loadSession, requireAdminTwoFactor } from './middleware/auth.js';
 import { AppError, translateDbError } from './lib/errors.js';
 import { logServerError, newErrorId } from './lib/logging.js';
 import { createHttpsServer } from './lib/https.js';
@@ -123,6 +123,7 @@ export function createApp() {
   app.use(loadSession);
   // After loadSession: the token is bound to the session it resolves.
   app.use(csrf);
+  app.use(requireAdminTwoFactor);
 
   app.get('/api/health', async (_req, res) => {
     try {
