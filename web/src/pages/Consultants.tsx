@@ -555,9 +555,17 @@ function SkillsTaxonomy() {
   const [retiring, setRetiring] = useState<any | null>(null);
   const [msg, setMsg] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
 
+  // The server hides retired skills unless asked, so a retired one can be
+  // listed here and restored.
   const list = useLoad<any>(
-    () => api.get(`/skills${search ? `?search=${encodeURIComponent(search)}` : ''}`),
-    [search],
+    () => {
+      const qs = new URLSearchParams();
+      if (search) qs.set('search', search);
+      if (showRetired) qs.set('includeRetired', 'true');
+      const text = qs.toString();
+      return api.get(`/skills${text ? `?${text}` : ''}`);
+    },
+    [search, showRetired],
   );
 
   const items = (list.data?.items ?? []).filter(
