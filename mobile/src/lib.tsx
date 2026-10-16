@@ -32,7 +32,18 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   });
 
   const text = await res.text();
-  const data = text ? JSON.parse(text) : null;
+  // A proxy or host that is down answers with an HTML or empty page, not JSON.
+  // That must read as a failed request, not as a crash in the parser.
+  let data: any = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    throw new ApiError(
+      res.status,
+      res.ok ? 'The server sent a reply this app cannot read.' : 'The service is temporarily unavailable. Try again shortly.',
+      res.ok ? 'bad_response' : 'service_unavailable',
+    );
+  }
 
   if (!res.ok) {
     throw new ApiError(res.status, data?.message ?? 'Something went wrong', data?.error, data?.detail);
@@ -189,46 +200,96 @@ export function useOnline() {
 // =====================================================================
 // Auth
 // =====================================================================
+/** Whether this person has a second sign-in step (docs/TWO-FACTOR.md). */
+export interface TwoFactorState {
+  enabled: boolean;
+  /** An administrator who must enrol first. Never true for the roles this app serves. */
+  required: boolean;
+}
+
+/** The first sign-in step either finishes, or asks for the code. */
+export type SignInResult = { user: CurrentUser } | { twoFactorRequired: true };
+
 interface AuthValue {
   user: CurrentUser | null;
+  twoFactor: TwoFactorState;
   loading: boolean;
-  signIn: (email: string, password: string) => Promise<CurrentUser>;
+  /** A one-off message after signing in, such as recovery codes running low. */
+  notice: string | null;
+  clearNotice: () => void;
+  signIn: (email: string, password: string) => Promise<SignInResult>;
+  verifyCode: (code: string) => Promise<CurrentUser>;
+  /** Re-reads the account, for example after two-factor is turned on or off. */
+  reload: () => Promise<void>;
   signOut: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthValue | null>(null);
+const NO_TWO_FACTOR: TwoFactorState = { enabled: false, required: false };
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<CurrentUser | null>(null);
+  const [twoFactor, setTwoFactor] = useState<TwoFactorState>(NO_TWO_FACTOR);
+  const [notice, setNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+
+  const apply = useCallback((m: { user: CurrentUser; twoFactor?: TwoFactorState } | null) => {
+    setUser(m?.user ?? null);
+    setTwoFactor(m?.twoFactor ?? NO_TWO_FACTOR);
+  }, []);
 
   useEffect(() => {
     api
-      .get<{ user: CurrentUser }>('/auth/me')
-      .then((m) => setUser(m.user))
-      .catch(() => setUser(null))
+      .get<{ user: CurrentUser; twoFactor?: TwoFactorState }>('/auth/me')
+      .then(apply)
+      .catch(() => apply(null))
       .finally(() => setLoading(false));
-  }, []);
+  }, [apply]);
 
-  const signIn = useCallback(async (email: string, password: string) => {
-    await api.post('/auth/login', { email, password });
-    // /auth/me carries the consultant link and client list the screens need,
-    // and the read refreshes the CSRF cookie against the new session.
-    const me = await api.get<{ user: CurrentUser }>('/auth/me');
-    setUser(me.user);
+  /** /auth/me carries the consultant link and client list the screens need,
+   *  and the read refreshes the CSRF cookie against the new session. */
+  const finish = useCallback(async () => {
+    const me = await api.get<{ user: CurrentUser; twoFactor?: TwoFactorState }>('/auth/me');
+    apply(me);
     return me.user;
-  }, []);
+  }, [apply]);
+
+  const signIn = useCallback(async (email: string, password: string): Promise<SignInResult> => {
+    const r = await api.post<{ twoFactorRequired?: true }>('/auth/login', { email, password });
+    // With two-factor on there is no session yet, so /auth/me would refuse.
+    if (r?.twoFactorRequired) return { twoFactorRequired: true };
+    return { user: await finish() };
+  }, [finish]);
+
+  const verifyCode = useCallback(async (code: string) => {
+    const r = await api.post<{ recoveryCodesRemaining?: number }>('/auth/login/verify', { code });
+    const u = await finish();
+    const left = r?.recoveryCodesRemaining;
+    if (left !== undefined && left <= 3) {
+      setNotice(left === 0
+        ? 'You used your last recovery code. Set up two-factor again under Account to get new ones.'
+        : `You have ${left} recovery code${left === 1 ? '' : 's'} left. Turn two-factor off and on again under Account to get a fresh set.`);
+    }
+    return u;
+  }, [finish]);
+
+  const reload = useCallback(async () => { await finish(); }, [finish]);
 
   const signOut = useCallback(async () => {
     try {
       await api.post('/auth/logout');
     } finally {
-      setUser(null);
+      apply(null);
+      setNotice(null);
     }
-  }, []);
+  }, [apply]);
+
+  const clearNotice = useCallback(() => setNotice(null), []);
 
   return (
-    <AuthContext.Provider value={{ user, loading, signIn, signOut }}>{children}</AuthContext.Provider>
+    <AuthContext.Provider value={{ user, twoFactor, loading, notice, clearNotice, signIn, verifyCode, reload, signOut }}>
+      {children}
+    </AuthContext.Provider>
   );
 }
 
