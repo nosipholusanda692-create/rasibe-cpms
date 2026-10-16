@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { query, withActor } from '../lib/db.js';
+import { retentionMonths } from '../lib/retention.js';
 import { badRequest, notFound, forbidden, project, assertCapability } from '../lib/errors.js';
 import { requireAuth, requireInternal } from '../middleware/auth.js';
 import { paged, MAX_PAGE_SIZE, DEFAULT_PAGE_SIZE } from '../lib/paging.js';
@@ -227,7 +228,7 @@ consultantsRouter.post('/', requireInternal, async (req, res, next) => {
       throw badRequest('Give the date the consultant becomes available');
     }
 
-    const months = 12;
+    const months = await withActor(req.actor!, (c) => retentionMonths(c));
     const rows = await query<any>(
       req.actor!,
       `INSERT INTO consultant (full_name, preferred_name, email, mobile, id_number, location,

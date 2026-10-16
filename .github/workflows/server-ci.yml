@@ -136,6 +136,20 @@ jobs:
           NODE_ENV: test
         run: npm run test:placements
 
+      # Retention of unplaced candidates and anonymisation (NFR-PRI-004/005).
+      # Builds its own consultants and backdates them, and puts the retention
+      # setting back when it is done.
+      - name: Run the retention tests
+        working-directory: server
+        env:
+          PGHOST: localhost
+          PGPORT: 5432
+          PGDATABASE: rasibe
+          PGUSER: rasibe_app
+          PGPASSWORD: rasibe_app_pw
+          NODE_ENV: test
+        run: npm run test:retention
+
       # Serving the built web and mobile clients from the API's origin. Needs
       # no database, and uses fixtures rather than a real build.
       - name: Run the client-serving tests

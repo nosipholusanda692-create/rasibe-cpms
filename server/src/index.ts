@@ -28,6 +28,7 @@ import { invoicesRouter, dashboardRouter, reportsRouter } from './routes/invoice
 import { notificationsRouter } from './routes/notifications.js';
 import { settingsRouter } from './routes/settings.js';
 import { usersRouter } from './routes/users.js';
+import { retentionRouter } from './routes/retention.js';
 import { startDispatcher } from './services/dispatcher.js';
 import { startScheduler } from './services/scheduler.js';
 
@@ -182,6 +183,7 @@ export function createApp(options: { clients?: ClientDirs; pageLoadsPerMinute?: 
   app.use('/api/notifications', notificationsRouter);
   app.use('/api/settings', settingsRouter);
   app.use('/api/users', usersRouter);
+  app.use('/api/retention', retentionRouter);
 
   app.use((_req, res) => {
     res.status(404).json({ error: 'not_found', message: 'No such endpoint' });
