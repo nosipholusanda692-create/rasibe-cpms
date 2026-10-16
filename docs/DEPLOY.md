@@ -10,7 +10,8 @@ cookie is `SameSite=Lax`, so a client on a different domain from its API cannot
 sign in. That is why the clients are served by the API rather than by a separate
 static host. The mobile app is built with its base set to `/m/` (its manifest
 and service worker are relative to where they are served), so the two share one
-origin, one cookie jar and one set of security headers. Section 6 covers it.
+origin, one cookie jar and one set of security headers. Section 6 covers it;
+section 7 hosts it on Azure App Service.
 
 The college Azure subscription does not have the PostgreSQL resource provider
 registered, and a student cannot register it. Neon is used instead; the Azure
@@ -23,7 +24,7 @@ consultants' details would need a lawful basis for the transfer under POPIA
 section 72, or a South African region.
 
 This file covers the database (sections 1 to 5) and how the clients are served
-(section 6). Choosing a host for the API is the remaining step.
+(section 6), and hosting them on Azure App Service (section 7).
 
 ## 1. Create the project
 
@@ -292,6 +293,107 @@ both clients first. Scripts never had it.
 worker's registration and its cache paths, and the manifest's `start_url`,
 `scope` and icons all follow from that. Phones that installed the app before
 this change must re-add it from `/m/`.
+
+## 7. Host it on Azure App Service
+
+One Linux web app runs the whole system: the API, the staff client at `/` and
+the mobile app at `/m/` (section 6). The database stays on Neon.
+
+### Create the web app (once)
+
+In the Azure portal, **Create a resource → Web App**:
+
+| Setting | Value |
+|---|---|
+| Publish | Code |
+| Runtime stack | Node 22 LTS |
+| Operating system | Linux |
+| Region | West Europe or Germany West Central: the nearest to Neon in Frankfurt, because every request makes several database calls. South Africa North is nearer the users but adds latency to each of them |
+| Pricing plan | Free F1 for a demonstration. B1 if the free plan's daily CPU allowance runs out, or the wait after idle (below) is unacceptable |
+| Deployment | Leave continuous deployment **off**. The workflow in this repository does it |
+
+Then, on the app:
+
+1. **Settings → Configuration → General settings**: Startup Command
+   `node server/dist/index.js`. **HTTPS Only** on, which is the default, and
+   Minimum TLS version 1.2.
+2. Same page, **SCM Basic Auth Publishing Credentials** on. GitHub needs the
+   publish profile, and a new app has this switched off.
+3. **Settings → Environment variables → App settings**. Type each value in the
+   portal; do not paste secrets anywhere else.
+
+| Name | Value |
+|---|---|
+| `NODE_ENV` | `production` |
+| `PGHOST` | the Neon **direct** host (no `-pooler`) |
+| `PGPORT` | `5432` |
+| `PGDATABASE` | `rasibe` |
+| `PGUSER` | `rasibe_app` |
+| `PGPASSWORD` | the `RASIBE_APP_PASSWORD` from section 3 |
+| `PGSSLMODE` | `verify-full` |
+| `PGSSLROOTCERT` | `system` |
+| `DATA_ENCRYPTION_KEY`, `DATA_INDEX_KEY`, `PASSWORD_PEPPER` | **The same values section 4 used.** Different ones leave every encrypted column and every password unreadable |
+| `CSRF_SECRET` | a new `openssl rand -hex 32` value, kept in the password manager |
+| `TRUST_PROXY` | `1`. App Service puts one proxy in front, and the sign-in throttle needs the caller's real address |
+| `CORS_ORIGIN` | the app's own address, `https://<name>.azurewebsites.net` (from the Overview page) |
+| `SCM_DO_BUILD_DURING_DEPLOYMENT` | `false`. The package arrives built |
+
+Do not create `REQUIRE_ADMIN_2FA`, `FORCE_HTTPS` or `PUBLIC_HOST` at all (a
+setting with an empty value is not the same as no setting; delete any you
+added). HTTPS Only
+already redirects at the platform, and the server refuses to start with
+`FORCE_HTTPS` and no `PUBLIC_HOST`. Leaving `REQUIRE_ADMIN_2FA` off keeps the
+administrator account usable by someone marking the system without an
+authenticator app; two-factor stays optional on every account.
+
+Save. The app restarts, and until the first deploy it shows the platform's
+default page.
+
+### Let GitHub deploy (once)
+
+Whoever has **Settings** access to the repository adds two things under
+**Settings → Secrets and variables → Actions**:
+
+- Variable `AZURE_WEBAPP_NAME`: the web app's name.
+- Secret `AZURE_WEBAPP_PUBLISH_PROFILE`: on the app's Overview page, **Get
+  publish profile**, then paste the whole downloaded file as the value and
+  delete the file. It is a credential for the app; do not send it in chat or
+  commit it.
+
+### Deploy
+
+**Actions → Deploy to Azure App Service → Run workflow**, on `main`. It builds
+the web client, the mobile app and the server, installs only the server's
+runtime dependencies on Linux (argon2 ships a native binary per platform, so a
+Windows build would not load), uploads that, and then calls `/api/health` until
+it reports `"database":"connected"`. The first run takes a few minutes. It is
+manual so that what is live changes when someone decides it should.
+
+### Check it
+
+- `https://<name>.azurewebsites.net/api/health` answers
+  `{"status":"ok","database":"connected"}`.
+- `/` is the staff sign-in and `/m/` the mobile app.
+- Sign in as each of the four roles with `DEMO_ACCOUNT_PASSWORD` (section 3).
+  The seeded accounts no longer accept the published `Password123!`.
+- The mobile app can be installed from `/m/`: the connection is HTTPS.
+
+### What to know
+
+- **Waking up.** On the Free plan there is no Always On. After about twenty
+  minutes idle the first request waits while the app starts, up to a minute, and
+  Neon's compute also wakes. Open the site shortly before anyone is meant to
+  use it, or say so in the submission notes.
+- **The address in the sign-in log.** App Service writes the caller's port into
+  `X-Forwarded-For` (`203.0.113.5:51234`). `lib/forwarded.ts` removes it when
+  `TRUST_PROXY` is set. Without that, the per-address throttle would see a new
+  address on every connection and stop limiting anything. `npm run test:proxy`.
+- **Logs.** **Monitoring → Log stream** shows the server's output. An
+  "Application Error" page nearly always means a missing setting: in
+  production the server refuses to start without the three keys, and will not
+  start if the database login fails.
+- **Changing a secret.** Rotating `DATA_ENCRYPTION_KEY`, `DATA_INDEX_KEY` or
+  `PASSWORD_PEPPER` is not a settings change; see ENCRYPTION.md and PASSWORDS.md.
 
 ## Alternative: Azure Database for PostgreSQL
 

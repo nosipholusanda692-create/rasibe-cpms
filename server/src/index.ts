@@ -15,6 +15,7 @@ import { csrf } from './lib/csrf.js';
 import { pool, closePool } from './lib/db.js';
 import { enforceAppRole } from './lib/db-role.js';
 import { installProcessGuards, makeShutdown } from './lib/resilience.js';
+import { normaliseForwardedFor } from './lib/forwarded.js';
 import { clientDirsFromEnv, mountClients, type ClientDirs } from './lib/clients.js';
 
 import { authRouter } from './routes/auth.js';
@@ -77,7 +78,12 @@ export function createApp(options: { clients?: ClientDirs; pageLoadsPerMinute?: 
   const app = express();
 
   const trustProxy = process.env.TRUST_PROXY;
-  if (trustProxy) app.set('trust proxy', trustProxySetting(trustProxy));
+  if (trustProxy) {
+    app.set('trust proxy', trustProxySetting(trustProxy));
+    // Before anything reads req.ip. Azure App Service appends the caller's port
+    // to the address, which would defeat the sign-in throttle (lib/forwarded.ts).
+    app.use(normaliseForwardedFor);
+  }
 
   // Express names itself in every response unless told not to. Helmet removes
   // the header as well, so this is belt and braces: it keeps the version off

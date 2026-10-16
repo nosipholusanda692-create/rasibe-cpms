@@ -1,0 +1,103 @@
+name: Deploy to Azure App Service
+
+# Manual on purpose. A deploy after every merge would put a half-finished change
+# in front of whoever is marking or demonstrating the system, and a failed run
+# on main would look like a broken build. Run it from the Actions tab, on main,
+# when main is in a state worth showing. docs/DEPLOY.md, section 7.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Two deploys at once would race to replace the same files.
+concurrency:
+  group: deploy-app-service
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Build and deploy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # Fails early and plainly if the one-time setup was not done, instead of
+      # failing at the end with an authentication error nobody can read.
+      - name: Check the deployment settings exist
+        env:
+          PUBLISH_PROFILE: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
+          APP_NAME: ${{ vars.AZURE_WEBAPP_NAME }}
+        run: |
+          if [ -z "$APP_NAME" ]; then
+            echo "::error::Repository variable AZURE_WEBAPP_NAME is not set (docs/DEPLOY.md, section 7)."
+            exit 1
+          fi
+          if [ -z "$PUBLISH_PROFILE" ]; then
+            echo "::error::Repository secret AZURE_WEBAPP_PUBLISH_PROFILE is not set (docs/DEPLOY.md, section 7)."
+            exit 1
+          fi
+
+      - name: Build the web client
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build the mobile app
+        working-directory: mobile
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build the server
+        working-directory: server
+        run: |
+          npm ci
+          npm run build
+
+      # The same layout as the repository, so the server finds web/dist and
+      # mobile/dist where it looks by default (server/src/lib/clients.ts).
+      # Dependencies are installed here, on Linux, because argon2 ships a
+      # native binary per platform: one installed on a Windows laptop would not
+      # load on the host. Only what runs is shipped: no sources, no dev tools.
+      - name: Assemble the package
+        run: |
+          mkdir -p stage/server stage/web stage/mobile
+          cp -r server/dist stage/server/dist
+          cp server/package.json server/package-lock.json stage/server/
+          cp -r web/dist stage/web/dist
+          cp -r mobile/dist stage/mobile/dist
+          cd stage/server
+          npm ci --omit=dev
+
+      - name: Deploy
+        id: deploy
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ vars.AZURE_WEBAPP_NAME }}
+          publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
+          package: stage
+
+      # The first request after a restart can take a minute, so this waits
+      # rather than failing on the first refusal. It checks the database too:
+      # a site that serves pages but cannot reach Neon is not a working deploy.
+      - name: Check the site is up and reaches the database
+        env:
+          SITE: ${{ steps.deploy.outputs.webapp-url }}
+        run: |
+          for i in $(seq 1 12); do
+            body="$(curl -fsS --max-time 20 "$SITE/api/health" || true)"
+            echo "attempt $i: $body"
+            if echo "$body" | grep -q '"database":"connected"'; then
+              echo "Deployed: $SITE"
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "::error::$SITE/api/health did not report a connected database. Check the app settings and the log stream."
+          exit 1
