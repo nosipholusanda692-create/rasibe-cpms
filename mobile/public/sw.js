@@ -5,12 +5,17 @@
  * and work that spans a connection gap is carried by the offline queue in
  * localStorage, not by this worker. The worker exists so the app opens at all
  * when a consultant is in a building with no signal.
+ *
+ * Paths are built from the worker's own scope, so it works wherever the app is
+ * mounted (/m/ when the API serves it, / under `npm run dev`).
  */
-const CACHE = 'rasibe-shell-v1';
+const CACHE = 'rasibe-shell-v2';
+const SCOPE = self.registration.scope;
+const SHELL = SCOPE + 'index.html';
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(CACHE).then((c) => c.addAll(['/', '/index.html', '/manifest.webmanifest']))
+    caches.open(CACHE).then((c) => c.addAll([SCOPE, SHELL, SCOPE + 'manifest.webmanifest']))
       .then(() => self.skipWaiting()),
   );
 });
@@ -39,7 +44,7 @@ self.addEventListener('fetch', (event) => {
         return res;
       })
       .catch(() =>
-        caches.match(event.request).then((hit) => hit ?? caches.match('/index.html')),
+        caches.match(event.request).then((hit) => hit ?? caches.match(SHELL)),
       ),
   );
 });
