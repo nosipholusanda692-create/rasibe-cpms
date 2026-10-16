@@ -13,6 +13,7 @@
     "test:2fa": "tsx src/test/two-factor.ts",
     "test:catalogue": "tsx src/test/catalogue.ts",
     "test:placements": "tsx src/test/placements.ts",
+    "test:retention": "tsx src/test/retention.ts",
     "test:clients": "tsx src/test/clients.ts",
     "test:proxy": "tsx src/test/proxy.ts",
     "encrypt-existing": "tsx src/scripts/encrypt-existing.ts",

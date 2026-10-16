@@ -40,7 +40,7 @@ CREATE TYPE audit_action_enum      AS ENUM (
   'PASSWORD_RESET_REQUESTED','PASSWORD_SET',
   'TWO_FACTOR_ENABLED','TWO_FACTOR_DISABLED','TWO_FACTOR_RESET','RECOVERY_CODE_USED',
   'SETTING_CHANGED','INVOICE_APPROVED','PAYMENT_RECORDED',
-  'CONSULTANT_DEACTIVATED','PLACEMENT_EXTENDED');
+  'CONSULTANT_DEACTIVATED','PLACEMENT_EXTENDED','RETENTION_CONSENT_RECORDED');
 CREATE TYPE account_token_purpose_enum AS ENUM ('INVITE', 'RESET');
 
 -- ---------------------------------------------------------------------
@@ -195,6 +195,9 @@ CREATE TABLE consultant (
   bank_account_ref  text,                          -- restricted: administrator only
   consent_recorded_at timestamptz,
   retention_expires_on date,
+  -- NFR-PRI-004: agreed in writing to be kept longer than the standard period
+  -- (migrations-010). The due date is worked out from the setting, not stored.
+  retention_consent_until date,
   is_active         boolean NOT NULL DEFAULT true,
   is_anonymised     boolean NOT NULL DEFAULT false,
   source            varchar(120),
