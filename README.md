@@ -1,7 +1,7 @@
 # Rasibe Consultant Placement Management System
 
-A working implementation of the system specified in the Rasibe Global Solutions
-system analysis and design documentation.
+An implementation of the system specified in the Rasibe Global Solutions system
+analysis and design documentation.
 
 Rasibe places IT consultants with client companies and earns the margin between
 the rate it bills the client and the rate it pays the consultant. This system
@@ -12,39 +12,85 @@ approval, and invoices raised only from approved hours.
 
 ---
 
+## Live system
+
+**https://rasibe-a5c7hfh3f2bydwgs.westeurope-01.azurewebsites.net/signin**
+
+Azure App Service serves the API and both clients from one origin over HTTPS,
+against a Neon PostgreSQL database. `docs/DEPLOY.md` covers how it is built.
+
+### Signing in
+
+| Role | Email | Lands on |
+| --- | --- | --- |
+| Administrator | `christinah@rasibe.co.za` | Dashboard, including margin |
+| Recruiter | `nosipho@rasibe.co.za` | Role requests |
+| Consultant | `thabo.m@example.co.za` | My timesheets |
+| Client manager | `s.naidoo@nedgroupit.co.za` | Timesheet approvals |
+
+The password for the deployed instance is supplied with the submission rather
+than committed here. For a local database it is set in `db/04_seed.sql`, and
+`npm run db:setup` asks for one instead so a deployed database never carries a
+published value.
+
+The sign-in pages do not list these accounts. They did during development, and
+that was wrong: anyone reaching the page could have signed in as an
+administrator and read margin figures.
+
+### Worth doing in this order
+
+Signing in as each role in turn demonstrates the requirement the system is built
+around. The administrator sees a margin figure on the dashboard; the recruiter
+does not. The consultant sees a pay rate on their placement; the client manager
+sees a bill rate on the same placement. Neither sees the margin.
+
+Those values are absent from the server response rather than hidden in the page,
+so they cannot be recovered from the browser developer tools or from network
+traffic.
+
+---
+
 ## What is in this repository
 
 ```
 rasibe/
 ├── db/                     PostgreSQL schema, security, triggers and seed data
-│   ├── 01_schema.sql       27 tables, 17 enumerated types, keys and constraints
+│   ├── 01_schema.sql       31 tables, 18 enumerated types, keys and constraints
 │   ├── 02_security.sql     database roles, row-level security, projection views
 │   ├── 03_triggers.sql     the five state machines and the financial invariants
 │   ├── 04_seed.sql         reference data and a demonstration data set
+│   ├── migrations-*.sql    schema changes since the baseline, applied in order
 │   ├── tests.sql           38 checks over the policies, triggers and invariants
+│   ├── apply.ps1 / .sh     builds a database from the files above
 │   └── SCHEMA-DIFF.md      why db/ is the live schema, and how it differs from design
 ├── server/                 Node, Express and TypeScript API
 │   └── src/
 │       ├── index.ts        application wiring, security headers, error translation
-│       ├── lib/            database access, errors, field-level projection,
-│       │                   encryption at rest, CSRF tokens, TLS, redacted logging
+│       ├── lib/            database access, errors, field projection, encryption,
+│       │                   CSRF tokens, paging, TLS, redacted logging
 │       ├── middleware/     session authentication and role guards
-│       ├── routes/         the twelve route modules
-│       ├── services/       notification queue and audit log
-│       ├── scripts/        one-off tools: backfill encryption, sign-in timing, backup and restore
-│       └── test/           integration and end-to-end suites
-├── web/                    React, Vite and TypeScript client
-│   └── src/
-│       ├── App.tsx         routing, navigation and sign in
-│       ├── lib.tsx         API client, auth context, shared components
-│       ├── styles.css      design tokens taken from the approved prototype
-│       └── pages/          one module per screen
-├── docs/                   how each security control works, and what it does not cover
-├── scripts/                development certificate generation
-├── .github/workflows/      the checks that run on every pull request
-├── .gitleaks.toml          secret scanning configuration
-└── README.md
+│       ├── routes/         ten route modules
+│       ├── services/       notification queue, email dispatch, audit log
+│       ├── scripts/        encryption backfill, backup and restore, mail tools
+│       └── test/           ten behavioural suites
+├── web/                    Client for the administrator, recruiter and client manager
+├── mobile/                 Installable progressive web application
+├── docs/                   One document per control, and what each does not cover
+├── scripts/                Development certificate generation
+└── .github/workflows/      The checks that run on every pull request
 ```
+
+### Two clients, one API
+
+| Client | Users | Purpose |
+| --- | --- | --- |
+| `web/` | Administrator, Recruiter, Client Manager | Consultant pool, clients, requests, placements, invoicing, reporting, configuration |
+| `mobile/` | Consultant, Client Manager | Capture hours on site, approve them in two taps |
+
+The mobile client is not a narrowed copy of the web one. It carries five screens,
+because a consultant standing in a client building and a recruiter at a desk are
+doing different jobs. It installs to a phone home screen and works without a
+signal. `mobile/README.md` explains the choice in full.
 
 ---
 
@@ -65,59 +111,34 @@ data isolation, `security_invoker` views for column projection, and the
 
 ## Setting up
 
-Windows instructions are below the Linux and macOS ones. Note that PowerShell
-does not accept `&&` as a statement separator, so run the commands one line at
-a time or use the supplied script.
-
 ### Windows (PowerShell)
 
-From the `db` folder:
+PowerShell does not accept `&&` as a statement separator, so run commands one at
+a time or use the script.
 
 ```powershell
+cd db
 .\apply.ps1
 ```
 
-The script checks that PostgreSQL is on your PATH, offers to add it if it finds
-an installation, asks once for the `postgres` password, creates the database,
-applies all four scripts in order and reports what it built. Use `-Recreate` to
-drop and rebuild.
+It finds PostgreSQL, creates the database, applies the baseline files and every
+migration in order, and reports what it built. Use `-Recreate` to start again.
 
-If you would rather do it by hand, run these one line at a time:
+If PowerShell refuses to run it:
 
 ```powershell
-$env:Path += ";C:\Program Files\PostgreSQL\16\bin"   # if psql is not on your PATH
-createdb -U postgres rasibe
-cd db
-psql -U postgres -d rasibe -v ON_ERROR_STOP=1 -f 01_schema.sql
-psql -U postgres -d rasibe -v ON_ERROR_STOP=1 -f 02_security.sql
-psql -U postgres -d rasibe -v ON_ERROR_STOP=1 -f 03_triggers.sql
-psql -U postgres -d rasibe -v ON_ERROR_STOP=1 -f 04_seed.sql
-```
-
-Then start the two applications in separate terminals:
-
-```powershell
-cd server
-Copy-Item .env.example .env
-npm install
-npm run dev
-```
-
-```powershell
-cd web
-npm install
-npm run dev
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 ```
 
 ### Linux and macOS
 
-### 1. Create the database
-
 ```bash
 createdb rasibe
+cd db
+./apply.sh
 ```
 
-### 2. Apply the scripts, in order
+### By hand
 
 ```bash
 cd db
@@ -127,59 +148,62 @@ psql -d rasibe -v ON_ERROR_STOP=1 -f 03_triggers.sql
 psql -d rasibe -v ON_ERROR_STOP=1 -f 04_seed.sql
 ```
 
-`02_security.sql` creates two database roles. Change the passwords before using
-this anywhere other than a development machine:
+Then every `migrations-*.sql` in numbered order, then:
+
+```bash
+psql -d rasibe -c "GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA public TO rasibe_app;
+                   GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA public TO rasibe_app;
+                   GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO rasibe_app;
+                   REVOKE UPDATE,DELETE ON audit_entry FROM rasibe_app;"
+```
+
+On Windows, set `$env:PGCLIENTENCODING = "UTF8"` before applying the seed. The
+file is UTF-8; some console configurations read it as Latin-1 and the demonstration
+text arrives with mangled punctuation.
+
+### The two database roles
+
+`02_security.sql` creates both:
 
 | Role | Purpose |
 | --- | --- |
 | `rasibe_app` | The API connects as this. Read and write on the tables, no update or delete on the audit log. |
 | `rasibe_reporting` | No privilege on base tables. Reads the report views only. |
 
-Grant the application role access to the seeded objects:
+**The API must not connect as the database owner.** An owner bypasses its own
+row-level security, so every isolation policy would be silently inert and nothing
+would error. Change both passwords before using this anywhere but a development
+machine.
 
-```bash
-psql -d rasibe -c "GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA public TO rasibe_app;
-                   GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA public TO rasibe_app;
-                   REVOKE UPDATE,DELETE ON audit_entry FROM rasibe_app;"
-```
+### Running it
 
-### 3. Start the API
+Three terminals.
 
 ```bash
 cd server
-cp .env.example .env      # then edit if your database is not on localhost:5432
+cp .env.example .env     # edit if the database is not on localhost:5432
 npm install
-npm run dev               # http://localhost:4000
+npm run encrypt-existing # once after seeding; turns the seeded values into ciphertext
+npm run dev              # http://localhost:4000
 ```
-
-Check it: `curl http://localhost:4000/api/health` should return
-`{"status":"ok","database":"connected"}`.
-
-### 4. Start the web client
 
 ```bash
 cd web
 npm install
-npm run dev               # http://localhost:5173
+npm run dev              # http://localhost:5173
 ```
 
-Vite proxies `/api` to the API on port 4000, so the session cookie is
-same-origin and needs no further configuration.
+```bash
+cd mobile
+npm install
+npm run dev              # http://localhost:5174
+```
 
----
+`curl http://localhost:4000/api/health` should return
+`{"status":"ok","database":"connected"}`.
 
-## Test accounts
-
-Every account uses the password `Password123!`.
-
-| Role | Email | Lands on |
-| --- | --- | --- |
-| Administrator | `christinah@rasibe.co.za` | Dashboard, including margin |
-| Recruiter | `nosipho@rasibe.co.za` | Role requests |
-| Consultant | `thabo.m@example.co.za` | My timesheets |
-| Client manager | `s.naidoo@nedgroupit.co.za` | Timesheet approvals |
-
-
+Both clients proxy `/api` to the API, so the session cookie is same-origin and
+needs no further configuration.
 
 ---
 
@@ -187,64 +211,72 @@ Every account uses the password `Password123!`.
 
 ```bash
 cd server
-npm test                  # 323 integration assertions
-npm run test:accounts     # 47 checks: invitations, password reset, suspension
-npm run test:2fa          # 78 checks: two-factor authentication (docs/TWO-FACTOR.md)
-npx tsx src/test/e2e.ts   # 19 assertions over the screens the web client loads
-npm run test:backup       # 23 checks: back up, restore, verify (docs/BACKUP.md)
+npm test                        # 323 behavioural assertions
+npm run test:2fa                # 78 — two-factor authentication
+npm run test:accounts           # 47 — invitations, password reset, suspension
+npx tsx src/test/paging.ts      # 36 — page boundaries and totals under RLS
+npx tsx src/test/catalogue.ts   # 35 — consultant edit, skills, termination
+npx tsx src/test/validation.ts  # 26 — the server refuses what the forms refuse
+npm run test:backup             # 23 — back up, restore, verify
+npx tsx src/test/e2e.ts         # 19 — the screens the web client loads
+npm run test:clients            # client isolation
+npm run test:proxy              # proxy and transport behaviour
 ```
 
 ```bash
-psql -U rasibe_app -d rasibe -v ON_ERROR_STOP=1 -f db/tests.sql   # 38 database checks
+cd mobile
+npx tsx test/mobile.ts          # 43 — capture, approval, offline sync, CSRF
 ```
 
-All three run against the real database rather than against mocks. Every
-assertion goes through HTTP, the application layer and PostgreSQL, so a
-constraint or trigger that stopped working would fail the suite.
+```bash
+PGOPTIONS=-c rasibe.tests_strict=on \
+  psql -U rasibe_app -d rasibe -v ON_ERROR_STOP=1 -f db/tests.sql   # 38 database checks
+```
 
-The integration suite writes data and does not roll back. Re-apply `01` through
-`04` against a freshly created database before each run, or point it at a
-throwaway container; re-running it against a database it has already written to
-produces failures that look real but are not.
+Every suite runs against the real database rather than mocks. Each assertion
+travels through HTTP, the application layer and PostgreSQL, so a constraint or
+trigger that stopped holding fails the suite rather than passing unnoticed.
+
+**The suites write data and do not roll back.** Rebuild the database before each
+run. Running `npm test` twice without rebuilding produces failures that look real
+but are not: the second run finds a week it already carried through submit,
+approve and invoice.
 
 `db/tests.sql` needs `PGOPTIONS=-c rasibe.tests_strict=on`. Without it a failed
 check is only a `NOTICE` and `psql` still exits 0, which is a false pass.
+
+### What the suites have caught
+
+Worth stating, because it is the argument for having them:
+
+- A consultant submitting a week could not read the contact table, because
+  row-level security restricts it. The approver lookup returned nothing and no
+  notification was raised — silently. An approver would never have been told work
+  was waiting.
+- Every paged list sorted by a non-unique column, so the same row could appear on
+  two pages while another was never shown at all. Invisible until there is enough
+  data to need paging, which is when nobody is checking by hand.
+- `PATCH /consultants/:id` accepted a pay-rate change from a recruiter, which the
+  requirements do not allow. The edit screen hid the fields; the server did not
+  enforce it.
 
 ---
 
 ## Continuous integration
 
-Eight checks run on every pull request and on every push to `main`. CodeQL
-also runs every Monday, because its query pack changes even when this
-repository does not. `docs/CI.md` explains what each one is for and, just as
-importantly, what none of them covers.
-
-They are not yet enforced. `main` has no branch protection rule, so a pull
-request can be merged with a check failing and a commit can be pushed to `main`
-without going through one at all. The checks are a convention the two of us
-follow rather than something the repository guarantees.
+Eight checks run on every pull request and on every push to `main`. CodeQL also
+runs weekly, because its query pack changes even when this repository does not.
+`docs/CI.md` explains what each is for and what none of them covers.
 
 | Check | What it would catch |
 | --- | --- |
-| Server CI | A regression in any of the 323 behavioural assertions, 47 account checks or 78 two-factor checks |
+| Server CI | A regression in any of the behavioural assertions |
 | Database tests | A row-level security policy or trigger that stopped holding |
 | Secret scan | A credential committed to the repository |
-| Dependency audit (server) | A known flaw in something the API ships |
-| Dependency audit (web) | A known flaw in something the client ships |
+| Dependency audit | A known flaw in something the API or a client ships |
 | Web CI | A front end that no longer compiles for production |
 | CodeQL | A vulnerability pattern in the JavaScript or TypeScript |
 | Backup drill | A backup that no longer restores, or restores unreadable |
-
-The dependency audit blocks on high and critical advisories in production
-dependencies only. Development-only findings are reported but do not fail the
-build, because a flaw in a bundler runs on the CI runner rather than reaching a
-user, and a check that goes red for things nobody can act on is a check
-everybody learns to ignore.
-
-CodeQL is the same shape in a different place. The job fails if the analysis
-cannot run. A finding does not fail it: the result is uploaded to the
-repository Security tab. Making either of those a merge requirement is the
-branch-protection setting described above.
 
 ---
 
@@ -260,7 +292,7 @@ hold even against a direct SQL statement.
 | BR-003 only approved hours may be invoiced | `trg_invoice_line_requires_approval` |
 | BR-004 no future-dated hours | application guard plus `ck_day_total` |
 | BR-005 a rejection needs a reason | `ck_reject_reason`, minimum five characters |
-| BR-006 and BR-007 rate confidentiality | row-level security, projection views, server-side field stripping |
+| BR-006, BR-007 rate confidentiality | row-level security, projection views, server-side field stripping |
 | BR-008 rates snapshotted at submission | `fn_timesheet_status_transition` |
 | BR-009 a rate change needs approval | `fn_placement_status_transition` |
 | BR-010 invoice number allocated at issue | `fn_invoice_status_transition` |
@@ -268,6 +300,7 @@ hold even against a direct SQL statement.
 | BR-012 consent before disclosure | `trg_submission_consent` |
 | BR-013 client data isolation | row-level security policies |
 | BR-016 daily hour ceiling | `fn_timesheet_recalc` |
+| BR-017 a deactivated consultant may not be submitted | `trg_submission_consent` |
 | BR-018 no editing a submitted week | `fn_timesheet_status_transition` |
 | BR-019 server wins on sync conflict | `client_uuid` and `row_version` on `timesheet` |
 | BR-020 append-only audit log | `REVOKE UPDATE, DELETE ON audit_entry` |
@@ -276,38 +309,108 @@ hold even against a direct SQL statement.
 ### Rate confidentiality
 
 The defining requirement. A consultant must never see the bill rate or the
-margin; a client manager must never see the pay rate or the margin. This is
-enforced in three places rather than one:
+margin; a client manager must never see the pay rate or the margin. Enforced in
+three places rather than one:
 
 1. **Row-level security** decides which rows a session may read at all.
 2. **`security_invoker` views** omit the restricted columns from the query.
-3. **`project()` in `lib/errors.ts`** strips restricted keys on the server
-   before the response is serialised.
+3. **`project()`** strips restricted keys on the server before serialisation.
 
 The restricted values are therefore never transmitted. They cannot be recovered
 from network traffic, a browser console, or a modified client.
 
+Verified on the deployed database by counting the client companies visible under
+four conditions: the owner sees four, the application role with nobody signed in
+sees none, as a client manager one, as an administrator four. The zero is the
+telling figure — a database where the policies were bypassed would have returned
+four every time.
+
 ### Offline timesheet capture
 
-A consultant working on client premises frequently has no signal. The mobile
-capture screen holds the week in `localStorage` against a `clientUuid` generated
-on the device before any connectivity exists. On reconnection the browser sends
-the queue to `POST /api/timesheets/sync`, which returns one of three outcomes:
+A consultant on client premises frequently has no signal. The mobile client holds
+the week in `localStorage` against a `clientUuid` generated on the device before
+any connectivity exists. On reconnection the queue goes to
+`POST /api/timesheets/sync`, which answers in one of three ways:
 
 | Outcome | Meaning |
 | --- | --- |
 | `accepted` | The week was written. |
-| `already_accepted` | The token had already been processed. Nothing is created, so a repeated transmission is harmless. |
-| `conflict` | The server row has moved on. The server version stands, the local copy is retained, and the consultant is told. |
+| `already_accepted` | That token had already been processed. Nothing is created, so retransmission is harmless. |
+| `conflict` | The server row has moved on. The server version stands, the local copy is kept, and the consultant is told. |
 
-The failure mode of an unreliable connection is a repeated request, not a lost
-one, which is why the operation is idempotent.
+The failure mode of an unreliable connection is a **repeated** request, not a
+lost one, which is why the operation is keyed by a token rather than retried.
+
+### Front-end validation
+
+Both clients check what they can as the person types: dates that run backwards, a
+pay rate above a bill rate, hours beyond the daily ceiling, a reason too short to
+be useful. A field is not marked wrong while it is still being filled in — the
+message appears when the person leaves it, or on submit.
+
+None of that is security, and nothing on the server was relaxed because of it.
+`server/src/test/validation.ts` sends, without a browser, exactly the requests the
+forms refuse, and asserts the API still rejects every one.
+
+### Accounts
+
+There is no self-registration. A consultant cannot sign themselves up because they
+must already be in the pool with consent recorded; a client manager cannot because
+they would be claiming access to a company's data.
+
+An administrator creates the account and chooses the role. No password is set: an
+invitation valid for 72 hours is issued and the person chooses their own, so nobody
+else ever knows it. A forgotten password is recovered the same way with a one-hour
+link. Both tokens are stored only as a SHA-256, so a reader of that table cannot
+set anybody's password.
+
+### Paging
+
+Six lists page: consultants, role requests, placements, timesheets, invoices and
+the audit log. The response carries `items`, `total`, `page`, `pageSize`,
+`pageCount` and `hasMore`.
+
+`total` is counted under the same row-level security as the list, so a client
+manager is told how many of their own records exist rather than how many the
+system holds. Counting without that would leak the size of data they cannot read.
+
+---
+
+## Email
+
+Notifications are written to the `notification` table inside the same transaction
+as the business change, which satisfies the requirement that a delivery failure
+must never roll back a booking. A dispatcher sends them afterwards — on a timer
+inside the API, or on demand:
+
+```bash
+npm run notify:send
+```
+
+Rows are claimed with `FOR UPDATE SKIP LOCKED`, so two dispatchers cannot send the
+same message twice. A failure backs off 1, 2, 4 then 8 minutes and is abandoned
+after five attempts.
+
+Configure `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD` and `MAIL_FROM`
+in `server/.env`, then check it:
+
+```bash
+npm run mail:verify                      # tests the connection, sends nothing
+npm run mail:verify -- you@example.com   # sends one test message
+```
+
+With no `SMTP_HOST` set, notifications are logged instead of sent. That is the
+development default and needs no mail server.
+
+Gmail requires an **app password** rather than an account password, which in turn
+requires two-step verification on the account.
 
 ---
 
 ## API reference
 
-All routes are under `/api`. Authentication is a `httpOnly` session cookie.
+All routes are under `/api`. Authentication is a `httpOnly` session cookie, and
+every write carries a CSRF token. List endpoints accept `page` and `pageSize`.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
@@ -315,17 +418,23 @@ All routes are under `/api`. Authentication is a `httpOnly` session cookie.
 | POST | `/auth/logout` | Sign out and revoke the session |
 | GET | `/auth/me` | Current user, role, capabilities, landing page |
 | POST | `/auth/change-password` | Change password, revoking other sessions |
+| GET/POST | `/auth/token/:purpose` | Read or redeem an invitation or reset link |
+| POST | `/auth/forgot-password` | Request a reset link |
+| GET/POST | `/users` | Accounts: list, create and invite |
+| POST | `/users/:id/invite` | Reissue an invitation |
+| POST | `/users/:id/status` | Suspend or reinstate |
+| POST | `/users/:id/role` | Change a role |
 | GET | `/consultants` | Search the pool |
 | GET | `/consultants/:id` | Full profile, projected by role |
 | POST | `/consultants` | Add to the pool |
-| PATCH | `/consultants/:id` | Amend; a consultant may amend only their own |
+| PATCH | `/consultants/:id` | Amend; rates are administrator-only |
 | POST | `/consultants/:id/consent` | Record consent to disclosure |
-| PUT | `/consultants/:id/skills` | Replace the skill set |
-| GET | `/clients` | Client companies |
-| POST | `/clients` | Add a client |
-| POST | `/clients/:id/contacts` | Add a contact |
-| GET | `/requests` | Role requests |
-| POST | `/requests` | Raise a request |
+| POST | `/consultants/:id/deactivate` | Deactivate, with a reason |
+| GET/POST | `/skills` | The matching taxonomy |
+| PATCH | `/skills/:id` | Rename, recategorise or restore |
+| POST | `/skills/:id/retire` | Retire, reporting how many records carry it |
+| GET/POST | `/clients` | Client companies |
+| GET/POST | `/requests` | Role requests |
 | GET | `/requests/:id/matches` | Matching consultants |
 | GET/POST | `/requests/:id/submissions` | Submissions against a request |
 | PATCH | `/requests/submissions/:sid` | Record an outcome |
@@ -354,113 +463,121 @@ All routes are under `/api`. Authentication is a `httpOnly` session cookie.
 
 ## Configuration
 
-Everything in `system_setting` is changed by an administrator through the
-Settings screen without a deployment: the timesheet cycle, reminder and
-escalation intervals, the placement alert thresholds, the daily hour ceiling,
-retention periods, company details and invoice numbering.
+Everything in `system_setting` is changed by an administrator through the Settings
+screen without a deployment: the timesheet cycle, reminder and escalation
+intervals, the placement alert thresholds, the daily hour ceiling, retention
+periods, company details and invoice numbering.
 
-### Environment variables
-
-`server/.env.example` is the authoritative list and explains each one in place.
-Every security variable is optional in development and the system runs with
-none of them set, which is deliberate: a fresh clone and the test suite work
-with no setup.
+`server/.env.example` is the authoritative list of environment variables and
+explains each in place. Every security variable is optional in development and the
+system runs with none of them set, so a fresh clone and the test suites work with
+no setup.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD` | localhost:5432 | Database connection |
 | `PORT` | 4000 | API port |
 | `NODE_ENV` | development | `production` hides internal error detail and makes the keys below mandatory |
-| `SESSION_TTL_HOURS` | 8 | Session lifetime |
+| `SESSION_TTL_HOURS`, `SESSION_IDLE_MINUTES` | 8 / 30 | Session lifetime and idle timeout |
 | `CORS_ORIGIN` | http://localhost:5173 | Permitted browser origin |
-| `SMTP_HOST` and related | empty | Email delivery, see below |
-
-Security settings. Each is covered by a document in `docs/`.
-
-| Variable | Default | Purpose |
-| --- | --- | --- |
 | `DATA_ENCRYPTION_KEY` | derived | Encrypts identity, banking and vetting values. **Losing it loses that data** |
-| `DATA_INDEX_KEY` | derived | Derives the fingerprint that keeps the identity number unique |
+| `DATA_INDEX_KEY` | derived | Derives the fingerprint keeping the identity number unique |
 | `PASSWORD_PEPPER` | derived | Secret mixed into every password hash. **Losing it means nobody can sign in** |
 | `CSRF_SECRET` | random at boot | Signs the token protecting state-changing requests |
-| `TLS_CERT_FILE`, `TLS_KEY_FILE` | unset | Serve HTTPS from this process. Leave unset where a proxy terminates TLS |
-| `FORCE_HTTPS` | unset | Redirect plain HTTP to HTTPS with a 308 |
-| `PUBLIC_HOST` | unset | The host that redirect points at. **Required** when `FORCE_HTTPS` is on; startup refuses without it |
-| `TRUST_PROXY` | unset | Hop count or address list. Only when a proxy really is in front |
-| `PGSSLMODE`, `PGSSLROOTCERT` | disable | Encrypt the database connection. Hosted PostgreSQL needs at least `require` |
+| `TLS_CERT_FILE`, `TLS_KEY_FILE` | unset | Serve HTTPS from this process |
+| `FORCE_HTTPS`, `PUBLIC_HOST` | unset | Redirect plain HTTP. `PUBLIC_HOST` is required when `FORCE_HTTPS` is on |
+| `PGSSLMODE`, `PGSSLROOTCERT` | disable | Encrypt the database connection. A hosted database needs at least `require` |
+| `SMTP_*`, `MAIL_FROM` | unset | Email delivery |
+| `NOTIFY_DISPATCH`, `NOTIFY_INTERVAL_SECONDS` | on / 60 | The notification dispatcher |
 
-Two of these have consequences worth stating plainly. With `NODE_ENV=production`
-the server **refuses to start** without `DATA_ENCRYPTION_KEY`, `DATA_INDEX_KEY`
-or `PASSWORD_PEPPER`, because the alternative is silently writing data a stolen
-database is enough to read. And all three have to be backed up separately from
-the database, never inside it: a backup restored without them has unreadable
-identity and banking details and no password that verifies. `docs/BACKUP.md`
-covers taking a backup, restoring it, and how a restore checks it has the right
-keys.
+With `NODE_ENV=production` the server **refuses to start** without
+`DATA_ENCRYPTION_KEY`, `DATA_INDEX_KEY` or `PASSWORD_PEPPER`, because the
+alternative is silently writing data that a stolen database is enough to read.
+
+All three must be backed up separately from the database and never inside it. A
+backup restored without them has unreadable identity and banking details and no
+password that verifies. `docs/BACKUP.md` covers taking a backup, restoring it, and
+how a restore checks it has the right keys.
 
 ---
 
 ## Troubleshooting
 
-**`The token '&&' is not a valid statement separator`** — you are in Windows
-PowerShell, which does not accept `&&`. Run each command on its own line, or use
-`db\apply.ps1`.
+**`The token '&&' is not a valid statement separator`** — Windows PowerShell does
+not accept `&&`. Run each command on its own line, or use `db\apply.ps1`.
 
-**`createdb: command not found` or `psql is not recognised`** — PostgreSQL is
-not on your PATH. On Windows:
+**`psql is not recognised`** — PostgreSQL is not on your PATH:
 
 ```powershell
 $env:Path += ";C:\Program Files\PostgreSQL\16\bin"
 ```
 
-Check with `Get-Command psql`. If PostgreSQL is not installed, get version 16 or
-later; earlier versions lack facilities this system depends on.
+**`column ... does not exist` after pulling** — a migration has not been applied.
+Apply every `db/migrations-*.sql` newer than your last run.
 
-**`password authentication failed for user "rasibe_app"`** — `02_security.sql`
-creates that role with the password `rasibe_app_pw`. Either keep that in
-`server/.env` for development, or change both the role and the file:
-
-```sql
-ALTER ROLE rasibe_app WITH PASSWORD 'your-password';
-```
-
-**`relation "app_user" does not exist`** — the scripts did not all apply. Drop
-the database and run them again in order; `01_schema.sql` must succeed before
-the others will.
-
-**`permission denied for table ...`** — the grants at the end of the setup did
-not run. Apply them:
+**`password authentication failed for user "rasibe_app"`** — the role lives at
+server level, so dropping and recreating the database does not refresh its
+password:
 
 ```sql
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO rasibe_app;
-GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO rasibe_app;
-REVOKE UPDATE, DELETE ON audit_entry FROM rasibe_app;
+ALTER ROLE rasibe_app WITH PASSWORD 'rasibe_app_pw';
 ```
 
-**The web client shows "Could not load"** — the API is not running or is on
-another port. Check `http://localhost:4000/api/health` returns
-`{"status":"ok","database":"connected"}`.
+**Tests fail on ciphertext** — run `npm run encrypt-existing` once after seeding.
 
-**Port already in use** — change `PORT` in `server/.env`, and the proxy target
-in `web/vite.config.ts` to match.
+**Tests fail with "transition not permitted" or "already submitted"** — the
+database has been through a previous run. Rebuild it.
 
+**A button is missing for a role that should have it** — capabilities are read at
+sign-in from `role_capability` and held for the session. Sign out and back in after
+a migration that changes them.
 
+**The client shows "Could not load"** — the API is not running. Check
+`http://localhost:4000/api/health`.
+
+---
 
 ## Design decisions worth knowing
 
 **Roles are data, not subclasses.** A user holds `user_role` records carrying
-`role_capability` entries, so permissions change without a schema change.
+`role_capability` entries, so permissions change without a schema change. The
+clients build their navigation from the same table, so it must agree with the
+capability map in `lib/errors.ts`.
 
-**Rates are snapshotted twice.** Once onto the placement at creation, once onto
-the timesheet at submission. A rate agreed in March cannot alter a February week
-that has already been approved and invoiced.
+**Rates are snapshotted twice.** Once onto the placement at creation, once onto the
+timesheet at submission. A rate agreed in March cannot alter a February week
+already approved and invoiced.
 
-**Invoice numbers are allocated at issue, not at draft.** A discarded draft
-consumes no number, so the sequence has no gaps to explain to an auditor.
+**Invoice numbers are allocated at issue, not at draft.** A discarded draft consumes
+no number, so the sequence has no gaps to explain to an auditor.
 
-**Availability is derived from placement records**, not maintained by hand, so
-the flag cannot drift from reality.
+**Availability is derived from placement records**, not maintained by hand, so the
+flag cannot drift from reality. A consultant sets only when they become free, which
+nobody else knows.
 
-**Authorisation is a distinct concern**, applied as projection before
-serialisation rather than distributed through the controllers. One place to get
-right, one place to test.
+**Consultants and skills are retired, not deleted.** The placements, timesheets and
+invoices behind a consultant are financial records, and the proficiency recorded
+against a skill was entered by hand. Retiring removes them from matching and keeps
+the history.
+
+**Authorisation is a distinct concern**, applied as projection before serialisation
+rather than spread through the controllers. One place to get right, one place to
+test.
+
+**A paged query needs a total order.** Sorting by a name or a date alone leaves
+ties, and the database is free to return tied rows in any order, so the same row can
+appear on two pages. Every paged query carries a unique tiebreaker.
+
+**The mobile client is deliberately small.** Five screens, two roles. Everything a
+recruiter or administrator does stays on the web client, because a consultant on
+site and a recruiter at a desk are not doing the same job.
+
+---
+
+## Authors
+
+**Nosipho** (ST10507346) — requirements and analysis, API, web and mobile clients,
+project management
+
+**Loyiso Theo Tose** (ST10504517) — design and architecture, security controls,
+deployment
