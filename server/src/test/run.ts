@@ -10,6 +10,7 @@
  */
 import { createApp } from '../index.js';
 import { anonQuery, closePool, withActor, type Actor } from '../lib/db.js';
+import { enforceAppRole, readRoleFacts, roleProblems } from '../lib/db-role.js';
 import { TLS_CIPHERS } from '../lib/https.js';
 import { bankAccountRef, isValidSaIdNumber, saIdNumber } from '../lib/identity.js';
 import { logServerError } from '../lib/logging.js';
@@ -1617,6 +1618,66 @@ async function main() {
       !!prefixRows[0]?.ip_address && !!prefixRows[0]?.ip_prefix, prefixRows[0]);
 
     await clearAttempts();
+
+    // ------------------------------------------------------------------
+    section('Application database role (BR-013, NFR-SEC-002)');
+
+    // The real login this suite runs as, which is what the API runs as.
+    const facts = await readRoleFacts();
+    check('the API connects as rasibe_app', facts.role === 'rasibe_app', facts.role);
+    check('that role is not a superuser', facts.superuser === false);
+    check('that role does not bypass row-level security', facts.bypassRls === false);
+    check('that role owns none of the tables', facts.ownedTables.length === 0, facts.ownedTables);
+    check('every table that has a policy has row-level security switched on',
+      facts.unprotectedTables.length === 0, facts.unprotectedTables);
+    check('the real login raises no problem', roleProblems(facts).length === 0, roleProblems(facts));
+
+    // Each way of switching the policies off is caught, and named.
+    const clean = { role: 'rasibe_app', superuser: false, bypassRls: false,
+                    ownedTables: [] as string[], unprotectedTables: [] as string[] };
+    const asSuperuser = roleProblems({ ...clean, role: 'postgres', superuser: true });
+    check('a superuser login is refused', asSuperuser.length === 1 && /superuser/.test(asSuperuser[0]), asSuperuser);
+    const asBypass = roleProblems({ ...clean, role: 'neondb_owner', bypassRls: true });
+    check('a BYPASSRLS login is refused', asBypass.length === 1 && /BYPASSRLS/.test(asBypass[0]), asBypass);
+    const asOwner = roleProblems({ ...clean, ownedTables: ['consultant', 'invoice'] });
+    check('a login that owns the tables is refused',
+      asOwner.length === 1 && /owns 2 table/.test(asOwner[0]) && /consultant/.test(asOwner[0]), asOwner);
+    const unprotected = roleProblems({ ...clean, unprotectedTables: ['placement'] });
+    check('a table whose policies are switched off is reported',
+      unprotected.length === 1 && /placement/.test(unprotected[0]), unprotected);
+    check('a login with several faults reports each of them',
+      roleProblems({ ...clean, superuser: true, bypassRls: true, ownedTables: ['x'] }).length === 3);
+
+    // What the API does with that answer before it listens.
+    const ownerRole = async () => [{ role: 'neondb_owner', rolsuper: false, rolbypassrls: true }];
+    const badReader = (text: string) =>
+      /FROM pg_roles/.test(text) ? ownerRole() : Promise.resolve([]);
+
+    let refusedInProduction = '';
+    try { await enforceAppRole(badReader, 'production'); } catch (e: any) { refusedInProduction = e.message; }
+    check('in production a login that bypasses the policies stops the start-up',
+      /BYPASSRLS/.test(refusedInProduction), refusedInProduction);
+    check('the refusal says what to do instead', /rasibe_app/.test(refusedInProduction), refusedInProduction);
+
+    const warned: string[] = [];
+    const realWarn = console.warn;
+    console.warn = (...a: unknown[]) => { warned.push(a.join(' ')); };
+    let developmentThrew = false;
+    try { await enforceAppRole(badReader, 'development'); } catch { developmentThrew = true; }
+    console.warn = realWarn;
+    check('outside production the same login is warned about, not blocked',
+      !developmentThrew && warned.length === 1 && /BYPASSRLS/.test(warned[0]), { developmentThrew, warned });
+
+    let unreadableInProduction = '';
+    try {
+      await enforceAppRole(async () => { throw new Error('connection refused'); }, 'production');
+    } catch (e: any) { unreadableInProduction = e.message; }
+    check('in production a check that cannot run stops the start-up too',
+      /Could not check/.test(unreadableInProduction), unreadableInProduction);
+
+    let goodInProduction = true;
+    try { await enforceAppRole(undefined, 'production'); } catch { goodInProduction = false; }
+    check('in production the real login starts normally', goodInProduction);
   } finally {
     server.close();
     await closePool();
