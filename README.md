@@ -179,7 +179,7 @@ Every account uses the password `Password123!`.
 | Consultant | `thabo.m@example.co.za` | My timesheets |
 | Client manager | `s.naidoo@nedgroupit.co.za` | Timesheet approvals |
 
-The sign-in screen lists these; click a row to fill the form in.
+
 
 ---
 
