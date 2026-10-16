@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import rateLimit from 'express-rate-limit';
 import express, { type Request, type Response, type NextFunction, type Router } from 'express';
 
 /**
@@ -86,9 +87,30 @@ function isPageRequest(req: Request): boolean {
   );
 }
 
-function clientRouter(dir: string): Router {
+/**
+ * Page loads per address per minute.
+ *
+ * Every navigation to the app reads index.html from disk, and an unlimited
+ * route that touches the file system is an easy way to keep a small host busy
+ * (CWE-770). A person loads the page a handful of times a minute at most, since
+ * the client then navigates without asking for it again, so this is far above
+ * real use and shared addresses such as a campus network have room. Bundles do
+ * not count against it: they are served by the static middleware and are cheap.
+ * Like the sign-in limiter it keys on req.ip, so behind a proxy it needs
+ * TRUST_PROXY to be right.
+ */
+export const PAGE_LOADS_PER_MINUTE = 300;
+
+function clientRouter(dir: string, pageLoadsPerMinute: number): Router {
   const router = express.Router();
   const indexFile = path.join(dir, 'index.html');
+  const pageLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    limit: pageLoadsPerMinute,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: 'Too many requests. Wait a moment and try again.',
+  });
 
   router.use(
     express.static(dir, {
@@ -100,8 +122,12 @@ function clientRouter(dir: string): Router {
     }),
   );
 
-  router.get('*', (req: Request, res: Response, next: NextFunction) => {
-    if (!isPageRequest(req)) return next();
+  // Not a page: pass on without being counted. The limiter sits on the page
+  // path only, so a missing script or an API typo does not use up the allowance.
+  const onlyPages = (req: Request, _res: Response, next: NextFunction) =>
+    next(isPageRequest(req) ? undefined : 'router');
+
+  router.get('*', onlyPages, pageLimiter, (_req: Request, res: Response, next: NextFunction) => {
     res.setHeader('Cache-Control', 'no-cache');
     res.sendFile(indexFile, (err) => err && next(err));
   });
@@ -113,7 +139,11 @@ function clientRouter(dir: string): Router {
  * Mount the clients on an app. Call before the session middleware: a page or a
  * script is not personal, and serving it should not cost a session lookup.
  */
-export function mountClients(app: express.Express, dirs: ClientDirs): void {
+export function mountClients(
+  app: express.Express,
+  dirs: ClientDirs,
+  pageLoadsPerMinute = PAGE_LOADS_PER_MINUTE,
+): void {
   if (dirs.mobile) {
     // Express matches /m and /m/ alike, so the exact path is checked here or
     // the redirect would answer its own destination. The target is built from
@@ -124,7 +154,7 @@ export function mountClients(app: express.Express, dirs: ClientDirs): void {
     });
     // The mobile app first: it owns everything under /m/, and the web client's
     // catch-all would otherwise answer for it.
-    app.use(MOBILE_MOUNT, clientRouter(dirs.mobile));
+    app.use(MOBILE_MOUNT, clientRouter(dirs.mobile, pageLoadsPerMinute));
   }
-  if (dirs.web) app.use('/', clientRouter(dirs.web));
+  if (dirs.web) app.use('/', clientRouter(dirs.web, pageLoadsPerMinute));
 }

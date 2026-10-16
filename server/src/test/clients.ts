@@ -198,6 +198,37 @@ async function main() {
       check('the service worker carries the same policy', (sw.headers.get('content-security-policy') ?? '').includes("script-src 'self'"));
     }
 
+    section('Page loads are rate limited (CWE-770)');
+    {
+      const limited = createApp({ clients: { web: dirs.web, mobile: dirs.mobile }, pageLoadsPerMinute: 3 });
+      const s: Server = await new Promise((r) => { const x = limited.listen(PORT + 2, () => r(x)); });
+      const at = (p: string, accept = 'text/html') =>
+        fetch(`http://127.0.0.1:${PORT + 2}${p}`, { headers: { Accept: accept } });
+      try {
+        // Not pages, so they must not use up the allowance.
+        for (let i = 0; i < 6; i++) await (await at('/assets/missing.js', '*/*')).text();
+        for (let i = 0; i < 6; i++) await (await at('/assets/app.abc123.js', '*/*')).text();
+        for (let i = 0; i < 6; i++) await (await at('/api/no-such-endpoint')).text();
+
+        const statuses: number[] = [];
+        for (let i = 0; i < 5; i++) statuses.push((await at('/')).status);
+        check('the first three page loads succeed', statuses.slice(0, 3).every((s2) => s2 === 200), statuses);
+        check('the fourth is refused with 429', statuses[3] === 429, statuses);
+        check('and so is the fifth', statuses[4] === 429, statuses);
+
+        const refused = await at('/week');
+        check('the limit covers every page route, not just /', refused.status === 429, { status: refused.status });
+        check('the refusal says when to try again', refused.headers.get('ratelimit-reset') !== null || refused.headers.get('retry-after') !== null);
+
+        const asset = await at('/assets/app.abc123.js', '*/*');
+        check('bundles are still served while pages are limited', asset.status === 200, { status: asset.status });
+        const api = await at('/api/no-such-endpoint');
+        check('and the API is unaffected', api.status === 404, { status: api.status });
+      } finally {
+        await new Promise<void>((r) => s.close(() => r()));
+      }
+    }
+
     section('Nothing is served when nothing is built');
     {
       const bare = createApp({ clients: {} });

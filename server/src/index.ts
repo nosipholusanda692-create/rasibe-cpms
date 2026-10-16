@@ -72,7 +72,7 @@ function canonicalHost(raw: string | undefined): string {
  * `clients` says which built front ends to serve from this origin. It defaults
  * to whatever has been built (lib/clients.ts); a test passes its own.
  */
-export function createApp(options: { clients?: ClientDirs } = {}) {
+export function createApp(options: { clients?: ClientDirs; pageLoadsPerMinute?: number } = {}) {
   const app = express();
 
   const trustProxy = process.env.TRUST_PROXY;
@@ -136,7 +136,7 @@ export function createApp(options: { clients?: ClientDirs } = {}) {
 
   // Before the session middleware on purpose: a page or a script is the same
   // for everyone and should not cost a database lookup.
-  mountClients(app, options.clients ?? clientDirsFromEnv());
+  mountClients(app, options.clients ?? clientDirsFromEnv(), options.pageLoadsPerMinute);
 
   app.use(
     cors({

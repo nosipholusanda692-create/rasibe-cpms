@@ -271,6 +271,11 @@ always did.
   manifest and the service worker are revalidated on every load: a service
   worker that was cached would keep phones on an old release.
 - Files outside the build directory and dotfiles are not reachable.
+- Page loads are limited to 300 a minute per address (`PAGE_LOADS_PER_MINUTE` in
+  `clients.ts`), because each one reads a file from disk. A person loads the page
+  a handful of times a minute at most. Bundles, a missing file and `/api` do not
+  count. The limit keys on the client address, so behind a proxy set
+  `TRUST_PROXY` correctly, as for the sign-in limit.
 
 **Content Security Policy.** The API's policy already fits the built clients and
 needed one change: `upgrade-insecure-requests` is now sent only when
