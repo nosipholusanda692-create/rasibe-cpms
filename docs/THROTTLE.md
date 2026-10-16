@@ -128,6 +128,14 @@ stands: the edge must *overwrite* `X-Forwarded-For` rather than append to a
 client-supplied value, or a caller picks their own throttle bucket and steps
 around this entirely.
 
+**A port in the address.** Azure App Service writes the caller's port into
+`X-Forwarded-For` (`203.0.113.5:51234`). The port changes with every
+connection, and the colon makes `throttleKey` read the value as a malformed
+IPv6 address, so each attempt would count against a new key and nothing would
+ever reach twenty. `lib/forwarded.ts` strips the port, and only when
+`TRUST_PROXY` is set. `npm run test:proxy` shows the failure without it and the
+fix with it.
+
 ## What this does not cover
 
 **A distributed attack.** Twenty per address is no obstacle to a botnet with

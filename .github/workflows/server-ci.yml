@@ -116,3 +116,11 @@ jobs:
         env:
           NODE_ENV: test
         run: npm run test:clients
+
+      # An App Service-style proxy puts the caller's port in X-Forwarded-For,
+      # which would silently defeat the per-address sign-in throttle.
+      - name: Run the proxy address tests
+        working-directory: server
+        env:
+          NODE_ENV: test
+        run: npm run test:proxy

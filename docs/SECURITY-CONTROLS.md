@@ -73,6 +73,8 @@ From `server/`, against a throwaway database (never the live one):
 npm test                 # 323 checks: most of the rows above
 npm run test:accounts    # 47: invitations, password reset, suspension
 npm run test:2fa         # 78: two-factor sign-in
+npm run test:clients     # serving the built web and mobile apps
+npm run test:proxy       # a proxy that puts the caller's port in X-Forwarded-For
 npx tsx src/test/e2e.ts  # 19: routes end to end
 npx tsx src/test/validation.ts  # 26: the server still refuses what the forms refuse
 npm run test:backup      # 23: backup and restore drill
