@@ -40,7 +40,7 @@ function TabBar() {
 }
 
 function Shell({ children }: { children: React.ReactNode }) {
-  const { user, loading } = useAuth();
+  const { user, loading, signOut } = useAuth();
   if (loading) return <Loading />;
   if (!user) return <SignIn />;
 
@@ -60,6 +60,12 @@ function Shell({ children }: { children: React.ReactNode }) {
               Consultant search, placements, invoicing and reporting are on the web
               application. Sign in there instead.
             </p>
+            {/* Both apps share one sign-in when the API serves them (docs/DEPLOY.md),
+                so a person signed in on the web would otherwise be stuck here. */}
+            <div className="btn-stack">
+              <a className="btn btn-primary btn-block" href="/">Open the web application</a>
+              <button className="btn btn-block" onClick={() => void signOut()}>Sign out</button>
+            </div>
           </div>
         </section>
       </div>
@@ -89,7 +95,8 @@ function Home() {
 export default function App() {
   return (
     <AuthProvider>
-      <BrowserRouter>
+      {/* BASE_URL is /m/ in a build and / in `npm run dev` (vite.config.ts). */}
+      <BrowserRouter basename={import.meta.env.BASE_URL.replace(/\/$/, '') || '/'}>
         <Routes>
           <Route path="/" element={<Shell><Home /></Shell>} />
           <Route path="/week" element={<Shell><MyWeek /></Shell>} />

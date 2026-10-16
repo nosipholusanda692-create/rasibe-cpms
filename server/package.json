@@ -11,6 +11,7 @@
     "test:backup": "tsx src/test/backup-drill.ts",
     "test:accounts": "tsx src/test/accounts.ts",
     "test:2fa": "tsx src/test/two-factor.ts",
+    "test:clients": "tsx src/test/clients.ts",
     "encrypt-existing": "tsx src/scripts/encrypt-existing.ts",
     "db:setup": "tsx src/scripts/setup-database.ts",
     "reset-demo-for-tests": "tsx src/scripts/reset-demo-for-tests.ts",

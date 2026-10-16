@@ -1,8 +1,11 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
-export default defineConfig({
+export default defineConfig(({ command }) => ({
   plugins: [react()],
+  // The API serves this app from /m/ so the staff web client can own /
+  // (docs/DEPLOY.md). `npm run dev` stays at the root of port 5174.
+  base: command === 'build' ? '/m/' : '/',
   server: {
     port: 5174,
     host: true,            // reachable from a phone on the same network
@@ -22,4 +25,4 @@ export default defineConfig({
       },
     },
   },
-});
+}));
