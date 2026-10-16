@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Link, useParams, useNavigate } from 'react-router-dom';
 import {
   api, useAuth, useLoad, useFormError, Card, Status, Loading, Alert, Empty, Person,
-  Field, Modal, ReasonModal, money, date, titleCase,
+  Field, Modal, ReasonModal, Pager, usePaging, money, date, titleCase,
 } from '../lib';
 import {
   useForm, required, minLength, maxLength, number, min, max, afterField, notAbove, integer,
@@ -15,14 +15,21 @@ export default function Requests() {
   const { user } = useAuth();
   const [status, setStatus] = useState('OPEN,SHORTLISTING,INTERVIEWING');
   const [raising, setRaising] = useState(false);
+  const { page, setPage } = usePaging(status);
+
   const list = useLoad<any>(
-    () => api.get(`/requests${status ? `?status=${status}` : ''}`), [status]);
+    () => api.get(`/requests?page=${page}${status ? `&status=${status}` : ''}`),
+    [status, page]);
   const canRaise = ['ADMINISTRATOR', 'RECRUITER', 'CLIENT_MANAGER'].includes(user?.role ?? '');
 
   return (
     <>
       <Card title="Role requests"
-        subtitle={list.data ? `${list.data.items.length} requests` : undefined}
+        subtitle={list.data ? `${list.data.total ?? list.data.items.length} requests` : undefined}
+        footer={list.data && (
+          <Pager page={list.data.page} pageSize={list.data.pageSize} total={list.data.total}
+            pageCount={list.data.pageCount} onPage={setPage} noun="requests" />
+        )}
         action={canRaise && (
           <button className="btn btn-primary btn-sm" onClick={() => setRaising(true)}>
             New role request

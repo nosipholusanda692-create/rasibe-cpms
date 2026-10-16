@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { query, withActor } from '../lib/db.js';
 import { badRequest, notFound, forbidden, conflict, project, assertCapability } from '../lib/errors.js';
 import { requireAuth, requireAdmin } from '../middleware/auth.js';
+import { readPage, paged, limitOffset, countQuery } from '../lib/paging.js';
 import { TIMESHEET_STATUS, enumList, isoDate, queryBool } from '../lib/validation.js';
 import { audit, queueNotification } from '../services/notify.js';
 
@@ -33,6 +34,7 @@ timesheetsRouter.get('/', requireAuth, async (req, res, next) => {
       outstanding: queryBool(false),
     }).parse(req.query);
 
+    const page = readPage(req.query);
     const params: unknown[] = [];
     const where: string[] = ['1=1'];
     if (q.status) { params.push(q.status.split(',')); where.push(`t.status = ANY($${params.length}::timesheet_status_enum[])`); }
@@ -57,10 +59,24 @@ timesheetsRouter.get('/', requireAuth, async (req, res, next) => {
          JOIN client_company cl ON cl.client_id = p.client_id
          LEFT JOIN client_contact cc ON cc.contact_id = p.approver_contact_id
         WHERE ${where.join(' AND ')}
-        ORDER BY t.week_start DESC, con.full_name`,
+        ORDER BY t.week_start DESC, con.full_name, t.timesheet_id
+        ${limitOffset(params, page)}`,
       params,
     );
-    res.json({ items: project(req.actor!.role, rows) });
+
+    const total = await query<{ n: number }>(
+      req.actor!,
+      countQuery(
+        `timesheet t
+           JOIN placement p ON p.placement_id = t.placement_id
+           JOIN consultant con ON con.consultant_id = p.consultant_id
+           JOIN client_company cl ON cl.client_id = p.client_id`,
+        where.join(' AND '),
+      ),
+      params.slice(0, params.length - 2),
+    );
+
+    res.json(paged(project(req.actor!.role, rows), total[0]?.n ?? rows.length, page));
   } catch (e) { next(e); }
 });
 

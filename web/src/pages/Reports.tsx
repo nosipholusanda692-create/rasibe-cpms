@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { api, useAuth, useLoad, Card, Status, Loading, Alert, Empty, money, hours, date, titleCase } from '../lib';
+import { api, useAuth, useLoad, Card, Status, Loading, Alert, Empty, Pager, usePaging, money, hours, date, titleCase } from '../lib';
 
 /** Reporting (UC-27, UC-28). Margin is administrator only. */
 export default function Reports() {
@@ -13,8 +13,12 @@ export default function Reports() {
   const ending = useLoad<any>(() => api.get('/reports/placements-ending?days=90'));
   const ageing = useLoad<any>(() => api.get('/reports/invoice-ageing'));
   const util = useLoad<any>(() => api.get('/reports/utilisation'));
+  const { page: auditPage, setPage: setAuditPage } = usePaging(isAdmin);
   const audit = useLoad<any>(
-    () => isAdmin ? api.get('/reports/audit?limit=60') : Promise.resolve({ items: [] }), [isAdmin]);
+    () => isAdmin
+      ? api.get(`/reports/audit?page=${auditPage}&pageSize=40`)
+      : Promise.resolve({ items: [] }),
+    [isAdmin, auditPage]);
 
   const tabs = [
     ...(isAdmin ? [{ key: 'margin', label: 'Revenue, cost and margin' }] : []),
@@ -167,6 +171,11 @@ export default function Reports() {
             </tbody>
           </table>
         )
+      )}
+
+      {tab === 'audit' && audit.data?.total > 0 && (
+        <Pager page={audit.data.page} pageSize={audit.data.pageSize} total={audit.data.total}
+          pageCount={audit.data.pageCount} onPage={setAuditPage} noun="entries" />
       )}
     </Card>
   );

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { query, withActor } from '../lib/db.js';
 import { badRequest, notFound, conflict, project, assertCapability } from '../lib/errors.js';
 import { requireAuth, requireInternal, requireAdmin } from '../middleware/auth.js';
+import { readPage, paged, limitOffset, countQuery, MAX_PAGE_SIZE } from '../lib/paging.js';
 import { INVOICE_STATUS, enumList, queryInt } from '../lib/validation.js';
 import { csvDocument } from '../lib/csv.js';
 import { roundMoney } from '../lib/money.js';
@@ -22,6 +23,7 @@ invoicesRouter.get('/', requireAuth, async (req, res, next) => {
       clientId: z.string().uuid().optional(),
     }).parse(req.query);
 
+    const page = readPage(req.query);
     const params: unknown[] = [];
     const where: string[] = ['1=1'];
     if (q.status) { params.push(q.status.split(',')); where.push(`i.status = ANY($${params.length}::invoice_status_enum[])`); }
@@ -38,10 +40,18 @@ invoicesRouter.get('/', requireAuth, async (req, res, next) => {
                    THEN (current_date - i.due_date)::int ELSE 0 END AS days_overdue
          FROM invoice i JOIN client_company cl ON cl.client_id = i.client_id
         WHERE ${where.join(' AND ')}
-        ORDER BY i.created_at DESC`,
+        ORDER BY i.created_at DESC, i.invoice_id
+        ${limitOffset(params, page)}`,
       params,
     );
-    res.json({ items: project(req.actor!.role, rows) });
+
+    const total = await query<{ n: number }>(
+      req.actor!,
+      countQuery('invoice i JOIN client_company cl ON cl.client_id = i.client_id', where.join(' AND ')),
+      params.slice(0, params.length - 2),
+    );
+
+    res.json(paged(project(req.actor!.role, rows), total[0]?.n ?? rows.length, page));
   } catch (e) { next(e); }
 });
 
@@ -489,18 +499,36 @@ reportsRouter.get('/audit', requireAdmin, async (req, res, next) => {
       limit: z.coerce.number().min(1).max(500).default(100),
     }).parse(req.query);
 
+    // The audit log is the one list that genuinely grows without end, so it
+    // pages like the others. `limit` is honoured as the page size when given,
+    // so an existing caller asking for 100 entries still gets 100.
+    // `limit` predates paging and some callers ask for more than a page holds.
+    // Clamping keeps them working and simply gives them the first page, which
+    // is better than refusing a request that was valid yesterday.
+    const page = readPage({
+      page: (req.query as any).page,
+      pageSize: (req.query as any).pageSize ?? Math.min(q.limit, MAX_PAGE_SIZE),
+    });
+
     const params: unknown[] = [];
     const where: string[] = ['1=1'];
     if (q.entityTable) { params.push(q.entityTable); where.push(`a.entity_table = $${params.length}`); }
     if (q.entityId) { params.push(q.entityId); where.push(`a.entity_id = $${params.length}`); }
-    params.push(q.limit);
 
     const rows = await query(req.actor!,
       `SELECT a.audit_id, a.action, a.entity_table, a.entity_id, a.previous_value,
               a.new_value, a.reason, a.occurred_at, u.full_name AS actor_name
          FROM audit_entry a LEFT JOIN app_user u ON u.user_id = a.actor_user_id
         WHERE ${where.join(' AND ')}
-        ORDER BY a.occurred_at DESC LIMIT $${params.length}`, params);
-    res.json({ items: rows });
+        ORDER BY a.occurred_at DESC, a.audit_id DESC
+        ${limitOffset(params, page)}`, params);
+
+    const total = await query<{ n: number }>(
+      req.actor!,
+      countQuery('audit_entry a', where.join(' AND ')),
+      params.slice(0, params.length - 2),
+    );
+
+    res.json(paged(rows, total[0]?.n ?? rows.length, page));
   } catch (e) { next(e); }
 });

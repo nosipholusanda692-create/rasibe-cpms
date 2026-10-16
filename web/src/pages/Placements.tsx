@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { api, useAuth, useLoad, Card, Status, Loading, Alert, Empty, Person, Field, Modal, ReasonModal, money, date, titleCase } from '../lib';
+import { api, useAuth, useLoad, Card, Status, Loading, Alert, Empty, Person, Field, Modal, ReasonModal, Pager, usePaging, money, date, titleCase } from '../lib';
 
 /** Placement list. `mine` serves the consultant's own view. */
 export default function Placements({ mine }: { mine?: boolean }) {
@@ -13,7 +13,11 @@ export default function Placements({ mine }: { mine?: boolean }) {
   if (status) qs.set('status', status);
   if (mine && user?.consultantId) qs.set('consultantId', user.consultantId);
 
-  const list = useLoad<any>(() => api.get(`/placements?${qs}`), [status, mine, user?.consultantId]);
+  const { page, setPage } = usePaging([status, mine]);
+  qs.set('page', String(page));
+
+  const list = useLoad<any>(() => api.get(`/placements?${qs}`),
+    [status, mine, user?.consultantId, page]);
   const isAdmin = user?.role === 'ADMINISTRATOR';
   const isConsultant = user?.role === 'CONSULTANT';
   const isClient = user?.role === 'CLIENT_MANAGER';
@@ -39,7 +43,11 @@ export default function Placements({ mine }: { mine?: boolean }) {
       )}
 
       <Card title={mine ? 'My placements' : 'Placements'}
-        subtitle={list.data ? `${list.data.items.length} placements` : undefined}>
+        subtitle={list.data ? `${list.data.total ?? list.data.items.length} placements` : undefined}
+        footer={list.data && (
+          <Pager page={list.data.page} pageSize={list.data.pageSize} total={list.data.total}
+            pageCount={list.data.pageCount} onPage={setPage} noun="placements" />
+        )}>
         <div className="filters">
           <Field label="Status">
             <select value={status} onChange={(e) => setStatus(e.target.value)}>

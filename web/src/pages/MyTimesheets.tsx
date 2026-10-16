@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import {
   api, useAuth, useLoad, Card, Status, Loading, Alert, Empty, Person, Field, Modal,
+  Pager, usePaging,
   money, hours, date, dateShort, titleCase,
 } from '../lib';
 
@@ -315,14 +316,21 @@ export function TimesheetsPage() {
   if (status) qs.set('status', status);
   if (outstanding && !status) qs.set('outstanding', 'true');
 
-  const list = useLoad<any>(() => api.get(`/timesheets?${qs}`), [status, outstanding]);
+  const { page, setPage } = usePaging([status, outstanding]);
+  qs.set('page', String(page));
+
+  const list = useLoad<any>(() => api.get(`/timesheets?${qs}`), [status, outstanding, page]);
   const isAdmin = user?.role === 'ADMINISTRATOR';
 
   return (
     <>
       {msg && <Alert kind={msg.kind}>{msg.text}</Alert>}
       <Card title="Timesheets"
-        subtitle={list.data ? `${list.data.items.length} weeks` : undefined}>
+        subtitle={list.data ? `${list.data.total ?? list.data.items.length} weeks` : undefined}
+        footer={list.data && (
+          <Pager page={list.data.page} pageSize={list.data.pageSize} total={list.data.total}
+            pageCount={list.data.pageCount} onPage={setPage} noun="weeks" />
+        )}>
         <div className="filters">
           <Field label="Status">
             <select value={status} onChange={(e) => setStatus(e.target.value)}>

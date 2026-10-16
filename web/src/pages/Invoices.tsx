@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link, useParams, useNavigate } from 'react-router-dom';
-import { api, useAuth, useLoad, Card, Status, Loading, Alert, Empty, Field, Modal, ReasonModal, money, hours, date, titleCase } from '../lib';
+import { api, useAuth, useLoad, Card, Status, Loading, Alert, Empty, Field, Modal, ReasonModal, Pager, usePaging, money, hours, date, titleCase } from '../lib';
 
 /** Invoice run and list (UC-20, UC-21). */
 export default function Invoices() {
@@ -8,14 +8,20 @@ export default function Invoices() {
   const [status, setStatus] = useState('');
   const [preparing, setPreparing] = useState(false);
   const [msg, setMsg] = useState<{ kind: 'success' | 'error' | 'warn'; text: string } | null>(null);
-  const list = useLoad<any>(() => api.get(`/invoices${status ? `?status=${status}` : ''}`), [status]);
+  const { page, setPage } = usePaging(status);
+  const list = useLoad<any>(
+    () => api.get(`/invoices?page=${page}${status ? `&status=${status}` : ''}`), [status, page]);
   const isAdmin = user?.role === 'ADMINISTRATOR';
 
   return (
     <>
       {msg && <Alert kind={msg.kind}>{msg.text}</Alert>}
       <Card title="Invoices"
-        subtitle={list.data ? `${list.data.items.length} invoices` : undefined}
+        subtitle={list.data ? `${list.data.total ?? list.data.items.length} invoices` : undefined}
+        footer={list.data && (
+          <Pager page={list.data.page} pageSize={list.data.pageSize} total={list.data.total}
+            pageCount={list.data.pageCount} onPage={setPage} noun="invoices" />
+        )}
         action={isAdmin && (
           <button className="btn btn-primary btn-sm" onClick={() => setPreparing(true)}>
             New invoice run

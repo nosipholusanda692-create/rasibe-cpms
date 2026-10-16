@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Link, useParams, useNavigate } from 'react-router-dom';
 import {
   api, useAuth, useLoad, useFormError, Card, Status, Loading, Alert, Empty, Person,
-  Field, Modal, ReasonModal, money, date, titleCase,
+  Field, Modal, ReasonModal, Pager, usePaging, money, date, titleCase,
 } from '../lib';
 import {
   useForm, required, minLength, maxLength, email as emailRule, phone,
@@ -30,9 +30,12 @@ export default function Consultants({ skillsView }: { skillsView?: boolean }) {
   if (availability) qs.set('availability', availability);
   if (availableFrom) qs.set('availableFrom', availableFrom);
 
+  const { page, setPage } = usePaging([search, skill, seniority, availability, availableFrom]);
+  qs.set('page', String(page));
+
   const list = useLoad<any>(
     () => api.get(`/consultants?${qs.toString()}`),
-    [search, skill, seniority, availability, availableFrom],
+    [search, skill, seniority, availability, availableFrom, page],
   );
 
   if (skillsView) {
@@ -57,6 +60,10 @@ export default function Consultants({ skillsView }: { skillsView?: boolean }) {
           <button className="btn btn-primary btn-sm" onClick={() => setAdding(true)}>
             Add consultant
           </button>
+        )}
+        footer={list.data && (
+          <Pager page={list.data.page} pageSize={list.data.pageSize} total={list.data.total}
+            pageCount={list.data.pageCount} onPage={setPage} noun="consultants" />
         )}
       >
         {!isClientManager && (

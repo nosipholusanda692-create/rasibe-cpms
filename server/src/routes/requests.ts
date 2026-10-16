@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { query, withActor } from '../lib/db.js';
 import { badRequest, notFound, conflict, forbidden, project, assertCapability } from '../lib/errors.js';
 import { requireAuth, requireInternal, requireAdmin } from '../middleware/auth.js';
+import { readPage, paged, limitOffset, countQuery } from '../lib/paging.js';
 import { PLACEMENT_STATUS, REQUEST_STATUS, enumList, queryInt, searchText, fieldErrors, optionalReason } from '../lib/validation.js';
 import { audit, queueNotification } from '../services/notify.js';
 
@@ -20,6 +21,7 @@ requestsRouter.get('/', requireAuth, async (req, res, next) => {
       search: searchText.optional(),
     }).parse(req.query);
 
+    const page = readPage(req.query);
     const params: unknown[] = [];
     const where: string[] = ['1=1'];
     if (q.status) { params.push(q.status.split(',')); where.push(`r.status = ANY($${params.length}::request_status_enum[])`); }
@@ -43,10 +45,20 @@ requestsRouter.get('/', requireAuth, async (req, res, next) => {
          FROM resource_request r
          JOIN client_company c ON c.client_id = r.client_id
         WHERE ${where.join(' AND ')}
-        ORDER BY r.created_at DESC`,
+        ORDER BY r.created_at DESC, r.request_id
+        ${limitOffset(params, page)}`,
       params,
     );
-    res.json({ items: project(req.actor!.role, rows) });
+
+    // counted under the same policies as the list, so the total is what this
+    // caller may see rather than what the system holds
+    const total = await query<{ n: number }>(
+      req.actor!,
+      countQuery('resource_request r', where.join(' AND ')),
+      params.slice(0, params.length - 2),
+    );
+
+    res.json(paged(project(req.actor!.role, rows), total[0]?.n ?? rows.length, page));
   } catch (e) { next(e); }
 });
 
@@ -367,6 +379,7 @@ placementsRouter.get('/', requireAuth, async (req, res, next) => {
       endingWithinDays: queryInt(0, 3650).optional(),
     }).parse(req.query);
 
+    const page = readPage(req.query);
     const params: unknown[] = [];
     const where: string[] = ['1=1'];
     if (q.status) { params.push(q.status.split(',')); where.push(`p.status = ANY($${params.length}::placement_status_enum[])`); }
@@ -391,10 +404,23 @@ placementsRouter.get('/', requireAuth, async (req, res, next) => {
          JOIN consultant con ON con.consultant_id = p.consultant_id
          JOIN client_company cl ON cl.client_id = p.client_id
         WHERE ${where.join(' AND ')}
-        ORDER BY p.end_date`,
+        ORDER BY p.end_date, p.placement_id
+        ${limitOffset(params, page)}`,
       params,
     );
-    res.json({ items: project(req.actor!.role, rows) });
+
+    const total = await query<{ n: number }>(
+      req.actor!,
+      countQuery(
+        `placement p
+           JOIN consultant con ON con.consultant_id = p.consultant_id
+           JOIN client_company cl ON cl.client_id = p.client_id`,
+        where.join(' AND '),
+      ),
+      params.slice(0, params.length - 2),
+    );
+
+    res.json(paged(project(req.actor!.role, rows), total[0]?.n ?? rows.length, page));
   } catch (e) { next(e); }
 });
 

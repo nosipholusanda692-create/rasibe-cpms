@@ -592,3 +592,73 @@ export function ReasonModal({
   );
 }
 
+/**
+ * Paging controls for a list.
+ *
+ * Shown only when there is more than one page: a pager under four rows is
+ * noise. It reports the range and the total, because "showing 25" leaves the
+ * reader wondering twenty-five of what.
+ */
+export function Pager({
+  page, pageSize, total, pageCount, onPage, noun = 'results',
+}: {
+  page: number;
+  pageSize: number;
+  total: number;
+  pageCount: number;
+  onPage: (p: number) => void;
+  noun?: string;
+}) {
+  if (!total || pageCount <= 1) {
+    return total ? (
+      <div className="card-foot">
+        <span className="small muted">{total} {noun}</span>
+      </div>
+    ) : null;
+  }
+
+  const first = (page - 1) * pageSize + 1;
+  const last = Math.min(page * pageSize, total);
+
+  return (
+    <div className="card-foot">
+      <span className="small muted">
+        Showing {first} to {last} of {total} {noun}
+      </span>
+      <div className="spacer" />
+      <div className="btn-row">
+        <button className="btn btn-sm" disabled={page <= 1} onClick={() => onPage(1)}>
+          First
+        </button>
+        <button className="btn btn-sm" disabled={page <= 1} onClick={() => onPage(page - 1)}>
+          Previous
+        </button>
+        <span className="small muted" style={{ padding: '0 6px' }}>
+          Page {page} of {pageCount}
+        </span>
+        <button className="btn btn-sm" disabled={page >= pageCount} onClick={() => onPage(page + 1)}>
+          Next
+        </button>
+        <button className="btn btn-sm" disabled={page >= pageCount} onClick={() => onPage(pageCount)}>
+          Last
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Holds the page number for a list, and resets it whenever a filter changes.
+ *
+ * Forgetting that reset is the classic pagination defect: the person narrows a
+ * search while on page four, the new result set has two pages, and they are
+ * shown an empty table and conclude there are no matches.
+ */
+export function usePaging(resetKey: unknown) {
+  const [page, setPage] = useState(1);
+  const key = JSON.stringify(resetKey);
+
+  useEffect(() => { setPage(1); }, [key]);
+
+  return { page, setPage };
+}

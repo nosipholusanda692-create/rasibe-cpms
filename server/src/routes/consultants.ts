@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { query, withActor } from '../lib/db.js';
 import { badRequest, notFound, forbidden, project, assertCapability } from '../lib/errors.js';
 import { requireAuth, requireInternal } from '../middleware/auth.js';
+import { paged, MAX_PAGE_SIZE, DEFAULT_PAGE_SIZE } from '../lib/paging.js';
 import { audit } from '../services/notify.js';
 // NFR-SEC-005. The identity number is encrypted before it reaches the database.
 // Reads need nothing here: project() decrypts on the way out.
@@ -31,7 +32,7 @@ consultantsRouter.get('/', requireAuth, async (req, res, next) => {
         maxRate: z.coerce.number().finite().min(0).optional(),
         location: searchText.optional(),
         page: queryInt(1, 10_000).default(1),
-        pageSize: queryInt(1, 100).default(25),
+        pageSize: queryInt(1, MAX_PAGE_SIZE).default(DEFAULT_PAGE_SIZE),
       })
       .parse(req.query);
 
@@ -46,7 +47,13 @@ consultantsRouter.get('/', requireAuth, async (req, res, next) => {
           LIMIT $2 OFFSET $3`,
         [q.search ?? null, q.pageSize, (q.page - 1) * q.pageSize],
       );
-      return res.json({ items: rows, page: q.page, pageSize: q.pageSize });
+      const totalForClient = await query<{ n: number }>(
+        req.actor!, 'SELECT count(*)::int AS n FROM v_consultant_profile_client');
+      return res.json(paged(
+        rows,
+        totalForClient[0]?.n ?? rows.length,
+        { page: q.page, pageSize: q.pageSize, offset: (q.page - 1) * q.pageSize },
+      ));
     }
 
     const params: unknown[] = [];
@@ -104,7 +111,7 @@ consultantsRouter.get('/', requireAuth, async (req, res, next) => {
          LEFT JOIN skill s ON s.skill_id = cs.skill_id
         WHERE ${where.join(' AND ')}
         GROUP BY c.consultant_id
-        ORDER BY c.full_name
+        ORDER BY c.full_name, c.consultant_id
         LIMIT $${params.length - 1} OFFSET $${params.length}`,
       params,
     );
@@ -115,12 +122,12 @@ consultantsRouter.get('/', requireAuth, async (req, res, next) => {
       params.slice(0, params.length - 2),
     );
 
-    res.json({
-      items: project(req.actor!.role, rows),
-      total: total[0]?.n ?? rows.length,
-      page: q.page,
-      pageSize: q.pageSize,
-    });
+    // the same envelope as every other list, so one pager component serves all
+    res.json(paged(
+      project(req.actor!.role, rows),
+      total[0]?.n ?? rows.length,
+      { page: q.page, pageSize: q.pageSize, offset: (q.page - 1) * q.pageSize },
+    ));
   } catch (e) {
     next(e);
   }
