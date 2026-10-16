@@ -229,6 +229,125 @@ CREATE POLICY p_notification_read ON notification FOR SELECT USING (
 CREATE POLICY p_notification_write ON notification FOR ALL USING (true) WITH CHECK (true);
 
 -- ---------------------------------------------------------------------
+-- Account tokens and the lookups that run before a session exists
+--
+-- Nobody reaches account_token through the ordinary API surface. Inviting,
+-- resetting and redeeming go through the SECURITY DEFINER functions below,
+-- because the caller is either not signed in or must not read the table.
+-- Each does one narrow thing and returns only what the caller needs.
+-- ---------------------------------------------------------------------
+ALTER TABLE account_token ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p_account_token_admin ON account_token FOR SELECT USING (is_admin());
+
+-- The approver to notify when a week is submitted. The consultant submitting
+-- it may not read client_contact, so a direct query would find nobody.
+CREATE OR REPLACE FUNCTION placement_approver_user(p_placement uuid) RETURNS uuid
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+  SELECT cc.user_id
+    FROM placement p
+    JOIN client_contact cc ON cc.contact_id = p.approver_contact_id
+   WHERE p.placement_id = p_placement
+     AND cc.user_id IS NOT NULL
+     AND cc.is_active;
+$$;
+
+-- Records a token and returns its id; an outstanding token of the same
+-- purpose is retired, so a reissued link makes the previous one stop working.
+CREATE OR REPLACE FUNCTION issue_account_token(
+  p_user      uuid,
+  p_purpose   account_token_purpose_enum,
+  p_hash      bytea,
+  p_hours     int,
+  p_issued_by uuid,
+  p_ip        varchar
+) RETURNS uuid
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+DECLARE v_id uuid;
+BEGIN
+  UPDATE account_token
+     SET consumed_at = now()
+   WHERE user_id = p_user
+     AND purpose = p_purpose
+     AND consumed_at IS NULL;
+
+  INSERT INTO account_token (user_id, purpose, token_hash, expires_at, issued_by, ip_address)
+  VALUES (p_user, p_purpose, p_hash, now() + (p_hours * interval '1 hour'), p_issued_by, p_ip)
+  RETURNING token_id INTO v_id;
+
+  RETURN v_id;
+END $$;
+
+-- Redeems a token and sets the password together, so the same link cannot be
+-- used twice. NULL for unknown, used or expired alike, so the caller cannot
+-- tell which. Ends every other session for the account.
+CREATE OR REPLACE FUNCTION redeem_account_token(
+  p_hash     bytea,
+  p_purpose  account_token_purpose_enum,
+  p_password varchar
+) RETURNS uuid
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+DECLARE v_user uuid;
+BEGIN
+  UPDATE account_token
+     SET consumed_at = now()
+   WHERE token_hash = p_hash
+     AND purpose = p_purpose
+     AND consumed_at IS NULL
+     AND expires_at > now()
+  RETURNING user_id INTO v_user;
+
+  IF v_user IS NULL THEN
+    RETURN NULL;
+  END IF;
+
+  UPDATE app_user
+     SET password_hash = p_password,
+         is_active = true,
+         failed_logins = 0,
+         locked_until = NULL
+   WHERE user_id = v_user;
+
+  UPDATE user_session
+     SET revoked_at = now()
+   WHERE user_id = v_user
+     AND revoked_at IS NULL;
+
+  RETURN v_user;
+END $$;
+
+-- The name and email behind a live token, so the set-password page can greet
+-- the person. Nothing else.
+CREATE OR REPLACE FUNCTION account_token_subject(
+  p_hash    bytea,
+  p_purpose account_token_purpose_enum
+) RETURNS TABLE (full_name varchar, email varchar)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+  SELECT u.full_name, u.email
+    FROM account_token t
+    JOIN app_user u ON u.user_id = t.user_id
+   WHERE t.token_hash = p_hash
+     AND t.purpose = p_purpose
+     AND t.consumed_at IS NULL
+     AND t.expires_at > now();
+$$;
+
+-- The account for a reset request, which arrives with no session. The route
+-- answers identically whether or not this finds anything.
+CREATE OR REPLACE FUNCTION account_for_reset(p_email varchar)
+RETURNS TABLE (user_id uuid, full_name varchar, email varchar)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+  SELECT u.user_id, u.full_name, u.email
+    FROM app_user u
+   WHERE lower(u.email) = lower(p_email)
+     AND u.is_active;
+$$;
+
+GRANT EXECUTE ON FUNCTION issue_account_token(uuid, account_token_purpose_enum, bytea, int, uuid, varchar) TO rasibe_app;
+GRANT EXECUTE ON FUNCTION redeem_account_token(bytea, account_token_purpose_enum, varchar) TO rasibe_app;
+GRANT EXECUTE ON FUNCTION account_token_subject(bytea, account_token_purpose_enum) TO rasibe_app;
+GRANT EXECUTE ON FUNCTION account_for_reset(varchar) TO rasibe_app;
+
+-- ---------------------------------------------------------------------
 -- Column projection views (security_invoker: RLS of the caller applies)
 -- These are what the API selects from. The restricted columns are absent
 -- from the view definition, so they are never serialised for that role.

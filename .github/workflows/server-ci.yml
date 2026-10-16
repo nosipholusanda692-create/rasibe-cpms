@@ -84,3 +84,27 @@ jobs:
           PGPASSWORD: rasibe_app_pw
           NODE_ENV: test
         run: npm test
+
+      # Invitations, password reset, suspension and role change run before or
+      # outside a normal session, through privileged database functions.
+      - name: Run the account tests
+        working-directory: server
+        env:
+          PGHOST: localhost
+          PGPORT: 5432
+          PGDATABASE: rasibe
+          PGUSER: rasibe_app
+          PGPASSWORD: rasibe_app_pw
+          NODE_ENV: test
+        run: npm run test:accounts
+
+      - name: Run the two-factor tests
+        working-directory: server
+        env:
+          PGHOST: localhost
+          PGPORT: 5432
+          PGDATABASE: rasibe
+          PGUSER: rasibe_app
+          PGPASSWORD: rasibe_app_pw
+          NODE_ENV: test
+        run: npm run test:2fa

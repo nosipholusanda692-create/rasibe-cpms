@@ -11,7 +11,7 @@ changes even when this repository does not.
 
 | Workflow | Job | What it would catch |
 | --- | --- | --- |
-| Server CI | `server` | A regression in any of the 195 behavioural checks |
+| Server CI | `server` | A regression in any of the 246 behavioural checks, 47 account checks or 78 two-factor checks |
 | Database tests | `db-tests` | A row-level security policy that stops holding |
 | Secret scan | `gitleaks` | A credential committed to history |
 | Dependency audit | `audit` (server, web) | A known flaw in something we ship |

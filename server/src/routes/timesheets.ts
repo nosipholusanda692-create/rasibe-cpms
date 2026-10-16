@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { query, withActor } from '../lib/db.js';
 import { badRequest, notFound, forbidden, conflict, project, assertCapability } from '../lib/errors.js';
 import { requireAuth, requireAdmin } from '../middleware/auth.js';
+import { TIMESHEET_STATUS, enumList, isoDate, queryBool } from '../lib/validation.js';
 import { audit, queueNotification } from '../services/notify.js';
 
 export const timesheetsRouter = Router();
@@ -26,10 +27,10 @@ function addDays(iso: string, n: number): string {
 timesheetsRouter.get('/', requireAuth, async (req, res, next) => {
   try {
     const q = z.object({
-      status: z.string().optional(),
+      status: enumList(TIMESHEET_STATUS).optional(),
       placementId: z.string().uuid().optional(),
-      weekStart: z.string().optional(),
-      outstanding: z.coerce.boolean().optional(),
+      weekStart: isoDate.optional(),
+      outstanding: queryBool(false),
     }).parse(req.query);
 
     const params: unknown[] = [];
@@ -97,7 +98,8 @@ timesheetsRouter.get('/:id', requireAuth, async (req, res, next) => {
 timesheetsRouter.get('/my/current', requireAuth, async (req, res, next) => {
   try {
     if (req.actor!.role !== 'CONSULTANT') throw forbidden('Only a consultant has a timesheet of their own');
-    const ws = req.query.weekStart ? String(req.query.weekStart) : weekStart(new Date());
+    const asked = z.object({ weekStart: isoDate.optional() }).parse(req.query).weekStart;
+    const ws = asked ?? weekStart(new Date());
 
     const out = await withActor(req.actor!, async (c) => {
       const placements = await c.query(
@@ -142,13 +144,13 @@ const lineSchema = z.object({
   isPublicHoliday: z.boolean().default(false),
   isLeave: z.boolean().default(false),
   note: z.string().max(300).optional(),
-});
+}).strict();
 
 /** Saves the week without submitting it. Permitted only while it is a draft. */
 timesheetsRouter.put('/:id/lines', requireAuth, async (req, res, next) => {
   try {
     const id = z.string().uuid().parse(req.params.id);
-    const b = z.object({ lines: z.array(lineSchema) }).parse(req.body);
+    const b = z.object({ lines: z.array(lineSchema) }).strict().parse(req.body);
 
     const out = await withActor(req.actor!, async (c) => {
       const t = await c.query(`SELECT * FROM timesheet WHERE timesheet_id = $1`, [id]);
@@ -243,7 +245,7 @@ timesheetsRouter.post('/:id/decision', requireAuth, async (req, res, next) => {
     const b = z.object({
       decision: z.enum(['APPROVE', 'REJECT']),
       reason: z.string().optional(),
-    }).parse(req.body);
+    }).strict().parse(req.body);
 
     if (b.decision === 'REJECT' && (b.reason ?? '').trim().length < 5) {
       throw badRequest('Give a reason of at least five characters so the week can be corrected (BR-005).');
@@ -299,7 +301,7 @@ timesheetsRouter.post('/:id/decision', requireAuth, async (req, res, next) => {
 timesheetsRouter.post('/:id/override', requireAdmin, async (req, res, next) => {
   try {
     const id = z.string().uuid().parse(req.params.id);
-    const b = z.object({ reason: z.string().min(5, 'Give a reason for the override') }).parse(req.body);
+    const b = z.object({ reason: z.string().min(5, 'Give a reason for the override') }).strict().parse(req.body);
 
     const out = await withActor(req.actor!, async (c) => {
       const r = await c.query(
@@ -338,7 +340,10 @@ timesheetsRouter.post('/sync', requireAuth, async (req, res, next) => {
       rowVersion: z.number().int().min(0).default(0),
       submit: z.boolean().default(true),
       lines: z.array(lineSchema),
-    }).parse(req.body);
+      // The web client sends its whole queue entry, and weeks already queued
+      // in browsers carry this, so it is accepted (and not used).
+      queuedAt: z.string().max(40).optional(),
+    }).strict().parse(req.body);
 
     const out = await withActor(req.actor!, async (c) => {
       // 1. has this exact submission already been accepted?

@@ -4,17 +4,29 @@ import { closePool } from '../lib/db.js';
 
 const PORT = 4101;
 const BASE = `http://127.0.0.1:${PORT}/api`;
-const jar: Record<string, string> = {};
+const jar: Record<string, Map<string, string>> = {};
 let pass = 0, fail = 0;
 
-async function call(who: string, method: string, path: string, body?: unknown) {
+// Like a browser: reads first, which is how the CSRF token arrives, keeps every
+// cookie, and echoes the token on writes.
+async function call(who: string, method: string, path: string, body?: unknown): Promise<any> {
+  const cookies = (jar[who] ??= new Map());
+  if (method !== 'GET' && !cookies.has('rasibe_csrf')) await call(who, 'GET', '/auth/me');
+  const csrf = cookies.get('rasibe_csrf');
   const res = await fetch(BASE + path, {
     method,
-    headers: { 'Content-Type': 'application/json', ...(jar[who] ? { Cookie: jar[who] } : {}) },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(cookies.size ? { Cookie: [...cookies].map(([k, v]) => `${k}=${v}`).join('; ') } : {}),
+      ...(csrf ? { 'X-CSRF-Token': csrf } : {}),
+    },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
-  const sc = res.headers.get('set-cookie');
-  if (sc) jar[who] = sc.split(';')[0];
+  for (const line of res.headers.getSetCookie()) {
+    const [pair] = line.split(';');
+    const i = pair.indexOf('=');
+    if (i > 0) cookies.set(pair.slice(0, i).trim(), pair.slice(i + 1).trim());
+  }
   const t = await res.text();
   return { status: res.status, body: t ? JSON.parse(t) : null };
 }

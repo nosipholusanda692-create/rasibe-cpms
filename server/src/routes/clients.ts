@@ -3,13 +3,14 @@ import { z } from 'zod';
 import { query, withActor } from '../lib/db.js';
 import { badRequest, notFound, project, assertCapability } from '../lib/errors.js';
 import { requireAuth, requireInternal } from '../middleware/auth.js';
+import { searchText, fieldErrors } from '../lib/validation.js';
 
 export const clientsRouter = Router();
 
 /** Row-level security limits a client manager to their own company (BR-013). */
 clientsRouter.get('/', requireAuth, async (req, res, next) => {
   try {
-    const q = z.object({ search: z.string().optional() }).parse(req.query);
+    const q = z.object({ search: searchText.optional() }).parse(req.query);
     const rows = await query<any>(
       req.actor!,
       `SELECT c.client_id, c.legal_name, c.trading_name, c.registration_number, c.vat_number,
@@ -64,13 +65,13 @@ const clientBody = z.object({
   physicalAddress: z.string().optional(),
   billingAddress: z.string().optional(),
   paymentTermsDays: z.number().min(0).max(180).default(30),
-});
+}).strict();
 
 clientsRouter.post('/', requireInternal, async (req, res, next) => {
   try {
     assertCapability(req.actor!.role, 'manage_clients');
     const parsed = clientBody.safeParse(req.body);
-    if (!parsed.success) throw badRequest('Check the details you entered', parsed.error.flatten().fieldErrors);
+    if (!parsed.success) throw badRequest('Check the details you entered', fieldErrors(parsed.error));
     const b = parsed.data;
     const rows = await query<any>(
       req.actor!,
@@ -93,7 +94,7 @@ clientsRouter.post('/:id/contacts', requireInternal, async (req, res, next) => {
       phone: z.string().optional(),
       isTimesheetApprover: z.boolean().default(false),
       isPrimary: z.boolean().default(false),
-    }).parse(req.body);
+    }).strict().parse(req.body);
     const rows = await query<any>(
       req.actor!,
       `INSERT INTO client_contact (client_id, first_name, last_name, job_title, email, phone,

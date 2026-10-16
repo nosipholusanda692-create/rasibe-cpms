@@ -21,7 +21,7 @@ rasibe/
 │   ├── 02_security.sql     database roles, row-level security, projection views
 │   ├── 03_triggers.sql     the five state machines and the financial invariants
 │   ├── 04_seed.sql         reference data and a demonstration data set
-│   ├── tests.sql           36 checks over the policies, triggers and invariants
+│   ├── tests.sql           38 checks over the policies, triggers and invariants
 │   └── SCHEMA-DIFF.md      why db/ is the live schema, and how it differs from design
 ├── server/                 Node, Express and TypeScript API
 │   └── src/
@@ -187,13 +187,15 @@ The sign-in screen lists these; click a row to fill the form in.
 
 ```bash
 cd server
-npm test                  # 195 integration assertions
+npm test                  # 246 integration assertions
+npm run test:accounts     # 47 checks: invitations, password reset, suspension
+npm run test:2fa          # 78 checks: two-factor authentication (docs/TWO-FACTOR.md)
 npx tsx src/test/e2e.ts   # 19 assertions over the screens the web client loads
 npm run test:backup       # 23 checks: back up, restore, verify (docs/BACKUP.md)
 ```
 
 ```bash
-psql -U rasibe_app -d rasibe -v ON_ERROR_STOP=1 -f db/tests.sql   # 36 database checks
+psql -U rasibe_app -d rasibe -v ON_ERROR_STOP=1 -f db/tests.sql   # 38 database checks
 ```
 
 All three run against the real database rather than against mocks. Every
@@ -224,7 +226,7 @@ follow rather than something the repository guarantees.
 
 | Check | What it would catch |
 | --- | --- |
-| Server CI | A regression in any of the 195 behavioural assertions |
+| Server CI | A regression in any of the 246 behavioural assertions, 47 account checks or 78 two-factor checks |
 | Database tests | A row-level security policy or trigger that stopped holding |
 | Secret scan | A credential committed to the repository |
 | Dependency audit (server) | A known flaw in something the API ships |

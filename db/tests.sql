@@ -440,6 +440,25 @@ BEGIN
   END;
   PERFORM pg_temp.rasibe_test_check('36 a placement cannot bill less than it pays', NOT v_ok);
 
+  -- 37-38. Currency is an allow-list (ISO 4217), not any three characters.
+  v_ok := true;
+  BEGIN
+    INSERT INTO rate_card (client_id, name, currency, effective_from)
+    VALUES ('c0000001-0000-0000-0000-000000000001', 'Fixture unsupported currency', 'USD', '2030-01-01');
+  EXCEPTION WHEN OTHERS THEN
+    v_ok := false;
+  END;
+  PERFORM pg_temp.rasibe_test_check('37 a currency not on the list is refused', NOT v_ok);
+
+  v_ok := true;
+  BEGIN
+    INSERT INTO rate_card (client_id, name, currency, effective_from)
+    VALUES ('c0000001-0000-0000-0000-000000000001', 'Fixture rand', 'ZAR', '2030-01-01');
+  EXCEPTION WHEN OTHERS THEN
+    v_ok := false;
+  END;
+  PERFORM pg_temp.rasibe_test_check('38 a currency on the list is accepted', v_ok);
+
   -- 25-27. The same predicate the session middleware uses.
   INSERT INTO user_session (session_id, user_id, expires_at) VALUES
    ('90000007-0000-0000-0000-000000000001','b0000001-0000-0000-0000-000000000001', now() - interval '1 hour'),
@@ -491,7 +510,7 @@ BEGIN
   );
 
   SELECT n INTO v_n FROM rasibe_test_tally;
-  IF v_n <> 33 THEN
+  IF v_n <> 35 THEN
     PERFORM pg_temp.rasibe_test_check('checks before the audit role switch', false);
   END IF;
 END $tests$;
@@ -561,10 +580,10 @@ BEGIN
   );
 
   SELECT n INTO v_n FROM rasibe_test_tally;
-  IF v_n = 36 THEN
-    RAISE NOTICE 'all 36 tests passed';
+  IF v_n = 38 THEN
+    RAISE NOTICE 'all 38 tests passed';
   ELSE
-    PERFORM pg_temp.rasibe_test_check('suite completed 36 checks', false);
+    PERFORM pg_temp.rasibe_test_check('suite completed 38 checks', false);
   END IF;
 END $audit_check$;
 

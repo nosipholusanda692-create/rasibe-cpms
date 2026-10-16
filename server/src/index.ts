@@ -6,8 +6,9 @@ import cors from 'cors';
 import helmet from 'helmet';
 import hpp from 'hpp';
 
-import { loadSession } from './middleware/auth.js';
+import { loadSession, requireAdminTwoFactor } from './middleware/auth.js';
 import { AppError, translateDbError } from './lib/errors.js';
+import { fieldErrors } from './lib/validation.js';
 import { logServerError, newErrorId } from './lib/logging.js';
 import { createHttpsServer } from './lib/https.js';
 import { csrf } from './lib/csrf.js';
@@ -79,6 +80,10 @@ export function createApp() {
     helmet({
       // JSON API may be on a different origin from the client (CORS_ORIGIN).
       crossOriginResourcePolicy: { policy: 'cross-origin' },
+      // Helmet 8 leaves this off. With it, a document from this origin may only
+      // embed resources that opt in (CORP or CORS), which completes the
+      // isolation COOP same-origin starts.
+      crossOriginEmbedderPolicy: { policy: 'require-corp' },
       // NFR-SEC-001. A year is the floor browsers expect before they will
       // honour a preload submission. A browser only acts on this over TLS, so
       // it is inert rather than harmful in development. Preload itself is not
@@ -123,6 +128,7 @@ export function createApp() {
   app.use(loadSession);
   // After loadSession: the token is bound to the session it resolves.
   app.use(csrf);
+  app.use(requireAdminTwoFactor);
 
   app.get('/api/health', async (_req, res) => {
     try {
@@ -158,7 +164,7 @@ export function createApp() {
     if (err instanceof AppError) {
       e = err;
     } else if (err?.name === 'ZodError') {
-      e = new AppError(400, 'Check the details you entered', 'bad_request', err.flatten?.().fieldErrors);
+      e = new AppError(400, 'Check the details you entered', 'bad_request', fieldErrors(err));
     } else if (err?.type === 'entity.too.large') {
       // The body limit is a rejection, not a fault: it must not become a 5xx.
       e = new AppError(413, 'That request is too large.', 'payload_too_large');

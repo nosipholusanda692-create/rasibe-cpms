@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { query, withActor } from '../lib/db.js';
 import { badRequest, notFound, conflict, forbidden, project, assertCapability } from '../lib/errors.js';
 import { requireAuth, requireInternal, requireAdmin } from '../middleware/auth.js';
+import { PLACEMENT_STATUS, REQUEST_STATUS, enumList, queryInt, searchText, fieldErrors, optionalReason } from '../lib/validation.js';
 import { audit, queueNotification } from '../services/notify.js';
 
 export const requestsRouter = Router();
@@ -14,9 +15,9 @@ export const placementsRouter = Router();
 requestsRouter.get('/', requireAuth, async (req, res, next) => {
   try {
     const q = z.object({
-      status: z.string().optional(),
+      status: enumList(REQUEST_STATUS).optional(),
       clientId: z.string().uuid().optional(),
-      search: z.string().optional(),
+      search: searchText.optional(),
     }).parse(req.query);
 
     const params: unknown[] = [];
@@ -88,15 +89,15 @@ const requestBody = z.object({
     mandatory: z.boolean().default(true),
     minProficiency: z.enum(['BASIC', 'INTERMEDIATE', 'ADVANCED', 'EXPERT']).optional(),
     minYears: z.number().min(0).optional(),
-  })).default([]),
-});
+  }).strict()).default([]),
+}).strict();
 
 /** A client manager raises their own; a recruiter may raise on a client's behalf. */
 requestsRouter.post('/', requireAuth, async (req, res, next) => {
   try {
     assertCapability(req.actor!.role, 'raise_request');
     const parsed = requestBody.safeParse(req.body);
-    if (!parsed.success) throw badRequest('Check the details you entered', parsed.error.flatten().fieldErrors);
+    if (!parsed.success) throw badRequest('Check the details you entered', fieldErrors(parsed.error));
     const b = parsed.data;
 
     const out = await withActor(req.actor!, async (c) => {
@@ -147,7 +148,7 @@ requestsRouter.patch('/:id/status', requireAuth, async (req, res, next) => {
     const b = z.object({
       status: z.enum(['DRAFT', 'OPEN', 'SHORTLISTING', 'INTERVIEWING', 'FILLED', 'CANCELLED']),
       reason: z.string().optional(),
-    }).parse(req.body);
+    }).strict().parse(req.body);
 
     if (b.status === 'CANCELLED' && !b.reason) {
       throw badRequest('Give a reason for cancelling the request');
@@ -256,7 +257,7 @@ requestsRouter.post('/:id/submissions', requireInternal, async (req, res, next) 
       consultantId: z.string().uuid(),
       proposedBillRate: z.number().min(0).optional(),
       proposedPayRate: z.number().min(0).optional(),
-    }).parse(req.body);
+    }).strict().parse(req.body);
 
     const out = await withActor(req.actor!, async (c) => {
       const con = await c.query(
@@ -319,7 +320,7 @@ requestsRouter.patch('/submissions/:sid', requireAuth, async (req, res, next) =>
       outcome: z.enum(['SUBMITTED', 'SHORTLISTED', 'INTERVIEWING', 'OFFERED', 'PLACED',
         'DECLINED_BY_CLIENT', 'WITHDRAWN']),
       reason: z.string().optional(),
-    }).parse(req.body);
+    }).strict().parse(req.body);
 
     if (['DECLINED_BY_CLIENT', 'WITHDRAWN'].includes(b.outcome) && !b.reason) {
       throw badRequest('Give a reason so the consultant can be told why');
@@ -360,10 +361,10 @@ requestsRouter.patch('/submissions/:sid', requireAuth, async (req, res, next) =>
 placementsRouter.get('/', requireAuth, async (req, res, next) => {
   try {
     const q = z.object({
-      status: z.string().optional(),
+      status: enumList(PLACEMENT_STATUS).optional(),
       clientId: z.string().uuid().optional(),
       consultantId: z.string().uuid().optional(),
-      endingWithinDays: z.coerce.number().optional(),
+      endingWithinDays: queryInt(0, 3650).optional(),
     }).parse(req.query);
 
     const params: unknown[] = [];
@@ -411,13 +412,13 @@ const placementBody = z.object({
   billRate: z.number().min(0),
   payRate: z.number().min(0),
   rateUnit: z.enum(['HOURLY', 'DAILY', 'MONTHLY']).default('HOURLY'),
-});
+}).strict();
 
 placementsRouter.post('/', requireInternal, async (req, res, next) => {
   try {
     assertCapability(req.actor!.role, 'create_placement');
     const parsed = placementBody.safeParse(req.body);
-    if (!parsed.success) throw badRequest('Check the details you entered', parsed.error.flatten().fieldErrors);
+    if (!parsed.success) throw badRequest('Check the details you entered', fieldErrors(parsed.error));
     const b = parsed.data;
 
     if (new Date(b.endDate) <= new Date(b.startDate)) {
@@ -462,6 +463,7 @@ placementsRouter.post('/', requireInternal, async (req, res, next) => {
 placementsRouter.post('/:id/approve-rates', requireAdmin, async (req, res, next) => {
   try {
     const id = z.string().uuid().parse(req.params.id);
+    const body = optionalReason.parse(req.body ?? {});
     const out = await withActor(req.actor!, async (c) => {
       const cur = await c.query(`SELECT * FROM placement WHERE placement_id = $1`, [id]);
       if (!cur.rows.length) throw notFound('Placement not found');
@@ -479,7 +481,7 @@ placementsRouter.post('/:id/approve-rates', requireAdmin, async (req, res, next)
         actorUserId: req.actor!.userId, action: 'RATE_APPROVED',
         entityTable: 'placement', entityId: id,
         next: { billRate: cur.rows[0].bill_rate, payRate: cur.rows[0].pay_rate },
-        reason: req.body?.reason ?? 'Rates approved',
+        reason: body.reason ?? 'Rates approved',
       });
       return r.rows[0];
     });
@@ -490,7 +492,7 @@ placementsRouter.post('/:id/approve-rates', requireAdmin, async (req, res, next)
 placementsRouter.post('/:id/terminate', requireAdmin, async (req, res, next) => {
   try {
     const id = z.string().uuid().parse(req.params.id);
-    const b = z.object({ reason: z.string().min(5, 'Give a reason of at least five characters') })
+    const b = z.object({ reason: z.string().min(5, 'Give a reason of at least five characters') }).strict()
       .parse(req.body);
     const out = await withActor(req.actor!, async (c) => {
       const r = await c.query(
@@ -515,7 +517,7 @@ placementsRouter.patch('/:id/rates', requireAdmin, async (req, res, next) => {
       billRate: z.number().min(0),
       payRate: z.number().min(0),
       reason: z.string().min(5, 'Give a reason for the rate change'),
-    }).parse(req.body);
+    }).strict().parse(req.body);
 
     const out = await withActor(req.actor!, async (c) => {
       const prev = await c.query(`SELECT bill_rate, pay_rate FROM placement WHERE placement_id = $1`, [id]);

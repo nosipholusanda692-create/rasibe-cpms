@@ -13,6 +13,8 @@ import { anonQuery, closePool, withActor, type Actor } from '../lib/db.js';
 import { TLS_CIPHERS } from '../lib/https.js';
 import { bankAccountRef, isValidSaIdNumber, saIdNumber } from '../lib/identity.js';
 import { logServerError } from '../lib/logging.js';
+import { translateDbError } from '../lib/errors.js';
+import { csvCell, csvDocument } from '../lib/csv.js';
 import {
   hashPassword, isArgon2, isPeppered, needsRehash, PASSWORD_OPTIONS, PEPPER_MARK, verifyPassword,
 } from '../lib/passwords.js';
@@ -43,6 +45,27 @@ function check(name: string, condition: boolean, detail?: unknown) {
 
 function section(title: string) {
   console.log(`\n${title}`);
+}
+
+/** Reads CSV the way a spreadsheet does (RFC 4180), to check what it would see. */
+function parseCsv(text: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let cell = '';
+  let quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (quoted) {
+      if (ch === '"' && text[i + 1] === '"') { cell += '"'; i++; }
+      else if (ch === '"') quoted = false;
+      else cell += ch;
+    } else if (ch === '"') quoted = true;
+    else if (ch === ',') { row.push(cell); cell = ''; }
+    else if (ch === '\r' && text[i + 1] === '\n') { row.push(cell); rows.push(row); row = []; cell = ''; i++; }
+    else cell += ch;
+  }
+  if (cell || row.length) { row.push(cell); rows.push(row); }
+  return rows;
 }
 
 // ---------------------------------------------------------------------
@@ -316,6 +339,8 @@ async function main() {
     check('the consultant has a current week', current.body.items.length > 0, current.body);
     const sheet = current.body.items[0];
     const ws = sheet.week_start.slice(0, 10);
+    check('a date column arrives as the calendar day, not an instant',
+      /^\d{4}-\d{2}-\d{2}$/.test(sheet.week_start), sheet.week_start);
 
     const future = new Date(Date.now() + 7 * 86_400_000).toISOString().slice(0, 10);
     const futureSave = await consultant.put(`/timesheets/${sheet.timesheet_id}/lines`, {
@@ -335,6 +360,11 @@ async function main() {
     check('a draft week can be saved', save.status === 200, save.body);
     check('weekly totals are derived from the day lines',
       Number(save.body.total_standard_hours) === days.length * 8, save.body.total_standard_hours);
+    const reread = await consultant.get(`/timesheets/my/current?weekStart=${ws}`);
+    const rereadDays = (reread.body.items.find((s: any) => s.timesheet_id === sheet.timesheet_id)?.lines ?? [])
+      .map((l: any) => l.work_date);
+    check('saved days read back as the same days',
+      JSON.stringify(rereadDays) === JSON.stringify(days), { saved: days, read: rereadDays });
 
     const overMax = await consultant.put(`/timesheets/${sheet.timesheet_id}/lines`, {
       lines: [{ workDate: days[0], normalHours: 20, overtimeHours: 0 }],
@@ -653,6 +683,8 @@ async function main() {
       h('referrer-policy') === 'no-referrer', h('referrer-policy'));
     check('the browsing context is isolated from cross-origin openers',
       h('cross-origin-opener-policy') === 'same-origin', h('cross-origin-opener-policy'));
+    check('only resources that opt in may be embedded (COEP)',
+      h('cross-origin-embedder-policy') === 'require-corp', h('cross-origin-embedder-policy'));
     check('legacy cross-domain policy files are refused',
       h('x-permitted-cross-domain-policies') === 'none',
       h('x-permitted-cross-domain-policies'));
@@ -1146,7 +1178,10 @@ async function main() {
     check('a hash at the current parameters is not rewritten again', !needsRehash(fresh));
 
     await anonQuery(
-      `INSERT INTO app_user (email, full_name, password_hash) VALUES ($1, $2, $3)`,
+      `WITH u AS (
+         INSERT INTO app_user (email, full_name, password_hash) VALUES ($1, $2, $3)
+         RETURNING user_id)
+       INSERT INTO user_role (user_id, role) SELECT user_id, 'RECRUITER' FROM u`,
       [legacyEmail, 'Argon Upgrade', legacyHash],
     );
     const storedBefore = await anonQuery<{ password_hash: string }>(
@@ -1201,7 +1236,10 @@ async function main() {
     check('an Argon2id hash without the pepper is due for rewriting', needsRehash(unpeppered));
     const pepperEmail = 'pepper.upgrade@example.co.za';
     await anonQuery(
-      `INSERT INTO app_user (email, full_name, password_hash) VALUES ($1, $2, $3)`,
+      `WITH u AS (
+         INSERT INTO app_user (email, full_name, password_hash) VALUES ($1, $2, $3)
+         RETURNING user_id)
+       INSERT INTO user_role (user_id, role) SELECT user_id, 'RECRUITER' FROM u`,
       [pepperEmail, 'Pepper Upgrade', unpeppered],
     );
     const pepperLogin = await new Client('pepper').post('/auth/login', {
@@ -1289,6 +1327,207 @@ async function main() {
       rangeServer.close();
     }
     await clearAttempts();
+
+    // -----------------------------------------------------------------
+    section('Input validation on query strings');
+    // -----------------------------------------------------------------
+    // A malformed value must be told what is wrong (400), not reach the
+    // database and come back as "something went wrong" (500).
+    const checker = new Client('validation admin');
+    await checker.login('christinah@rasibe.co.za');
+    const worker = new Client('validation consultant');
+    await worker.login('thabo.m@example.co.za');
+
+    const badDays = await checker.get('/reports/placements-ending?days=abc');
+    check('a number that is not a number is a 400, not a 500',
+      badDays.status === 400 && badDays.body?.detail?.days !== undefined, badDays);
+    check('a valid number still works',
+      (await checker.get('/reports/placements-ending?days=90')).status === 200);
+    check('a fractional page number is refused',
+      (await checker.get('/consultants?page=1.5')).status === 400);
+
+    const badWeek = await worker.get('/timesheets/my/current?weekStart=banana');
+    check('a date that is not a date is a 400', badWeek.status === 400, badWeek);
+    check('a date that does not exist is a 400',
+      (await worker.get('/timesheets/my/current?weekStart=2026-02-30')).status === 400);
+    check('a real date still works',
+      (await worker.get('/timesheets/my/current?weekStart=2026-10-12')).status === 200);
+
+    const badSeniority = await checker.get('/consultants?seniority=WIZARD');
+    check('an option that does not exist is a 400', badSeniority.status === 400, badSeniority);
+    check('a list with one unknown status is a 400',
+      (await checker.get('/requests?status=OPEN,BOGUS')).status === 400);
+    check('a list of known statuses still works',
+      (await checker.get('/requests?status=OPEN,SHORTLISTING,INTERVIEWING')).status === 200);
+    check('an over-long search is refused',
+      (await checker.get(`/consultants?search=${'x'.repeat(201)}`)).status === 400);
+
+    // z.coerce.boolean() made "false" mean true, because Boolean("false") is.
+    await anonQuery(
+      `WITH u AS (
+         INSERT INTO app_user (email, full_name, password_hash, is_active) VALUES ($1, $2, '!', false)
+         RETURNING user_id)
+       INSERT INTO user_role (user_id, role) SELECT user_id, 'RECRUITER' FROM u`,
+      ['inactive.fixture@example.co.za', 'Inactive Fixture'],
+    );
+    const activeOnly = await checker.get('/users?includeInactive=false');
+    check('includeInactive=false leaves out suspended accounts',
+      activeOnly.status === 200 && activeOnly.body.items.every((u: any) => u.is_active),
+      activeOnly.body?.items?.filter((u: any) => !u.is_active).map((u: any) => u.email));
+    const everyone = await checker.get('/users');
+    check('and by default they are included',
+      everyone.body.items.some((u: any) => u.email === 'inactive.fixture@example.co.za'));
+    check('a flag that is neither true nor false is refused',
+      (await checker.get('/users?includeInactive=maybe')).status === 400);
+
+    // The backstop, for a value that reaches PostgreSQL unchecked.
+    check('a value PostgreSQL cannot read becomes a 400',
+      translateDbError({ code: '22P02', message: 'invalid input syntax for type uuid' }).status === 400);
+    check('a value too long for its column becomes a 400',
+      translateDbError({ code: '22001', message: 'value too long' }).status === 400);
+    check('a number too large for its column becomes a 400',
+      translateDbError({ code: '22003', message: 'numeric field overflow' }).status === 400);
+    check('a genuine fault is still a 500',
+      translateDbError({ code: '57P01', message: 'terminating connection' }).status === 500);
+
+    // -----------------------------------------------------------------
+    section('Unknown fields in request bodies (mass assignment)');
+    // -----------------------------------------------------------------
+    // A field the schema does not name is refused, not quietly dropped, so a
+    // later change that starts reading it cannot be reached from outside.
+    const extraField = await checker.post('/skills', { name: 'Strict Fixture Skill', isApproved: true });
+    check('a field the form does not have is refused', extraField.status === 400, extraField);
+    check('and the refusal names the field',
+      extraField.body?.detail?.isApproved?.[0] === 'This field is not accepted', extraField.body?.detail);
+    check('the same body without it is accepted',
+      (await checker.post('/skills', { name: 'Strict Fixture Skill' })).status === 201);
+
+    const nestedExtra = await worker.post('/timesheets/sync', {
+      clientUuid: '00000000-0000-4000-8000-000000000001',
+      placementId: '00000000-0000-4000-8000-000000000002',
+      weekStart: '2026-10-12',
+      lines: [{ workDate: '2026-10-12', normalHours: 8, approvedBy: 'self' }],
+    });
+    check('an unknown field inside a list item is refused too', nestedExtra.status === 400, nestedExtra);
+
+    const queued = await worker.post('/timesheets/sync', {
+      clientUuid: '00000000-0000-4000-8000-000000000003',
+      placementId: '00000000-0000-4000-8000-000000000004',
+      weekStart: '2026-10-12',
+      lines: [],
+      queuedAt: new Date().toISOString(),
+    });
+    check('a week already queued by the web client (with queuedAt) is still accepted for sync',
+      queued.status !== 400 && queued.status < 500, queued);
+
+    const [poolMember] = (await checker.get('/consultants')).body.items;
+    const objectReason = await checker.post(`/consultants/${poolMember.consultant_id}/consent`, {
+      reason: { $ne: null },
+    });
+    check('a reason that is not text is refused where none used to be checked',
+      objectReason.status === 400, objectReason);
+
+    // -----------------------------------------------------------------
+    section('CSV export (CSV injection, CWE-1236)');
+    // -----------------------------------------------------------------
+    check('a quote inside a value is doubled, not left to end the cell',
+      csvCell('Acme "Holdings", Ltd') === '"Acme ""Holdings"", Ltd"', csvCell('Acme "Holdings", Ltd'));
+    for (const hostile of ['=HYPERLINK("http://evil.example","x")', '+27 21 555 0100', '@SUM(A1)', '\tTab', '-cmd']) {
+      check(`a value starting ${JSON.stringify(hostile[0])} is shown as text, not run as a formula`,
+        csvCell(hostile).startsWith(`"'`), csvCell(hostile));
+    }
+    check('a negative amount stays a number', csvCell('-8.00') === '-8.00', csvCell('-8.00'));
+    check('a missing value is an empty cell', csvCell(null) === '' && csvCell(undefined) === '');
+    check('a newline stays inside its quoted cell', csvCell('two\nlines') === '"two\nlines"');
+
+    const creditNote = (await checker.get('/invoices')).body.items.find((i: any) => Number(i.total) < 0);
+    const exported = await checker.post(`/invoices/${creditNote.invoice_id}/export`);
+    const csvText = String(exported.body);
+    const rows = parseCsv(csvText.replace(/^\uFEFF/, ''));
+    check('the export is a CSV file', exported.status === 200 && rows.length >= 2, exported.status);
+    // fetch's text() drops a leading BOM, so it is checked on the document itself.
+    check('it starts with a byte-order mark so Excel reads it as UTF-8',
+      csvDocument(['a'], [['b']]) === '\uFEFF"a"\r\n"b"\r\n', csvDocument(['a'], [['b']]));
+    check('every row has the same seven columns',
+      rows.every((r) => r.length === 7), rows.map((r) => r.length));
+    check('a credit line total is exported as a plain negative number',
+      rows.slice(1).every((r) => /^-\d+(\.\d+)?$/.test(r[6])), rows.slice(1).map((r) => r[6]));
+    const csvRecruiter = new Client('csv recruiter');
+    await csvRecruiter.login('nosipho@rasibe.co.za');
+    check('a recruiter may not export', (await csvRecruiter.post(
+      `/invoices/${creditNote.invoice_id}/export`)).status === 403);
+
+    // -----------------------------------------------------------------
+    section('Idle session timeout');
+    // -----------------------------------------------------------------
+    // The clock is moved by rewriting last_seen_at, which is what thirty
+    // minutes away from the keyboard would do.
+    const idler = new Client('idler');
+    await idler.login('nosipho@rasibe.co.za');
+    const idleSid = idler.cookies.get('rasibe_session') ?? '';
+    const seen = (sid: string) => anonQuery<{ last_seen_at: Date; revoked_at: Date | null }>(
+      `SELECT last_seen_at, revoked_at FROM user_session WHERE session_id = $1`, [sid]);
+    const backdate = (sid: string, minutes: number) => anonQuery(
+      `UPDATE user_session SET last_seen_at = now() - ($2::int * interval '1 second') WHERE session_id = $1`,
+      [sid, Math.round(minutes * 60)]);
+
+    await backdate(idleSid, 29);
+    check('a session used within the idle limit keeps working',
+      (await idler.get('/auth/me')).status === 200);
+    const touched = (await seen(idleSid))[0];
+    check('using it moves the idle clock forward',
+      Date.now() - new Date(touched.last_seen_at).getTime() < 60_000, touched.last_seen_at);
+
+    await backdate(idleSid, 10 / 60);
+    const seenBefore = (await seen(idleSid))[0].last_seen_at;
+    await idler.get('/auth/me');
+    const seenAfter = (await seen(idleSid))[0].last_seen_at;
+    check('a request within the same minute does not write again',
+      new Date(seenBefore).getTime() === new Date(seenAfter).getTime(), { seenBefore, seenAfter });
+
+    await backdate(idleSid, 31);
+    const idleRefusal = await idler.get('/auth/me');
+    check('a session unused for thirty minutes is refused',
+      idleRefusal.status === 401 && idleRefusal.body?.error === 'session_idle', idleRefusal.body);
+    check('the refusal tells the person why',
+      /30 minutes without activity/.test(idleRefusal.body?.message ?? ''), idleRefusal.body?.message);
+    check('the idle session is revoked, not just ignored',
+      (await seen(idleSid))[0].revoked_at !== null);
+    await backdate(idleSid, 0);
+    check('and cannot be brought back by fresh activity',
+      (await idler.get('/auth/me')).status === 401);
+    const idleWrite = await idler.post('/auth/change-password', {
+      currentPassword: 'Password123!', newPassword: 'Fixture-Idle-2026x',
+    });
+    check('a write with the idle session is refused too', idleWrite.status === 401, idleWrite);
+
+    const savedIdle = process.env.SESSION_IDLE_MINUTES;
+    process.env.SESSION_IDLE_MINUTES = '5';
+    try {
+      const shortIdle = new Client('short idle');
+      await shortIdle.login('nosipho@rasibe.co.za');
+      await backdate(shortIdle.cookies.get('rasibe_session') ?? '', 6);
+      check('SESSION_IDLE_MINUTES sets the limit',
+        (await shortIdle.get('/auth/me')).body?.error === 'session_idle');
+    } finally {
+      if (savedIdle === undefined) delete process.env.SESSION_IDLE_MINUTES;
+      else process.env.SESSION_IDLE_MINUTES = savedIdle;
+    }
+
+    // A form left open past the limit: the first request after the gap is the
+    // save. Its CSRF token belongs to the dead session, which must not turn
+    // the idle message into "reload the page".
+    const formOpen = new Client('form left open');
+    await formOpen.login('nosipho@rasibe.co.za');
+    await backdate(formOpen.cookies.get('rasibe_session') ?? '', 31);
+    const lateSave = await formOpen.post('/skills', { name: 'Idle Fixture Skill' });
+    check('saving a form after the idle limit says the session went idle',
+      lateSave.status === 401 && lateSave.body?.error === 'session_idle', lateSave);
+
+    const returning = new Client('returning');
+    await returning.login('nosipho@rasibe.co.za');
+    check('signing in again after an idle timeout works',
+      (await returning.get('/auth/me')).status === 200);
 
     // -----------------------------------------------------------------
     section('Per-address throttle (FR-AUT-009)');

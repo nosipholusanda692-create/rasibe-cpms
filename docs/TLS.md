@@ -44,7 +44,7 @@ All of them are off by default, so development and CI run over plain HTTP exactl
 .\scripts\gen-dev-cert.ps1
 ```
 
-It writes `server/certs/localhost-cert.pem` and `localhost-key.pem`, valid for a year. The folder is excluded by `.gitignore`; nothing it produces may be committed. Then point the API at the pair and start it:
+It writes `server/certs/localhost-cert.pem` and `localhost-key.pem`: RSA 4096, signed with SHA-256, valid for a year. A certificate made before this change is RSA 2048; run the script with `-Force` to replace it. The folder is excluded by `.gitignore`; nothing it produces may be committed. Then point the API at the pair and start it:
 
 ```powershell
 $env:TLS_CERT_FILE = "$PWD\server\certs\localhost-cert.pem"
@@ -54,7 +54,14 @@ cd server; npm.cmd run dev
 
 The API now answers on `https://localhost:4000`. The certificate signs itself, so a browser warns once and `curl` needs `-k`. That is the only difference from a hosted certificate.
 
-Vite still proxies to `http://localhost:4000` by default. Running the API on HTTPS means changing that target in `web/vite.config.ts`, which is Nosipho's file, so plain HTTP stays the default for day-to-day work and HTTPS is used to verify the control.
+To run the web client over HTTPS as well, start the API as above with one more variable, then start Vite with `DEV_HTTPS`:
+
+```powershell
+$env:CORS_ORIGIN = "https://localhost:5173"   # in the API's shell, before npm.cmd run dev
+cd web; $env:DEV_HTTPS = "true"; npm.cmd run dev
+```
+
+Vite then serves `https://localhost:5173` with the same certificate and proxies `/api` to `https://localhost:4000`. `CORS_ORIGIN` is needed because the CSRF check refuses a write whose `Origin` is neither that setting nor the API itself, and the default is the `http://` address. Without `DEV_HTTPS`, Vite serves and proxies plain HTTP exactly as before; with it and no certificate, it stops and says to run the script.
 
 ## Why the session cookie is always Secure
 

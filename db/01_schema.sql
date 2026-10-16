@@ -35,7 +35,11 @@ CREATE TYPE audit_action_enum      AS ENUM (
   'TIMESHEET_APPROVED','TIMESHEET_REJECTED','TIMESHEET_OVERRIDDEN','RATE_CHANGED',
   'RATE_APPROVED','INVOICE_ISSUED','INVOICE_CANCELLED','CREDIT_NOTE_RAISED',
   'CONSENT_RECORDED','VETTING_ACCESSED','BANKING_ACCESSED','USER_DEACTIVATED',
-  'PLACEMENT_TERMINATED','CONSULTANT_ANONYMISED');
+  'PLACEMENT_TERMINATED','CONSULTANT_ANONYMISED',
+  'USER_CREATED','USER_INVITED','USER_REINSTATED','USER_ROLE_CHANGED',
+  'PASSWORD_RESET_REQUESTED','PASSWORD_SET',
+  'TWO_FACTOR_ENABLED','TWO_FACTOR_DISABLED','TWO_FACTOR_RESET','RECOVERY_CODE_USED');
+CREATE TYPE account_token_purpose_enum AS ENUM ('INVITE', 'RESET');
 
 -- ---------------------------------------------------------------------
 -- Access and identity
@@ -50,9 +54,17 @@ CREATE TABLE app_user (
   failed_logins   int NOT NULL DEFAULT 0,
   locked_until    timestamptz,
   last_login_at   timestamptz,
+  -- Two-factor authentication. Both secrets are AES-256-GCM ciphertext written
+  -- by the service (lib/crypto.ts); the key never reaches the database.
+  totp_secret         text,
+  totp_pending_secret text,
+  totp_enabled_at     timestamptz,
+  -- The last 30-second step accepted, so one code cannot be used twice.
+  totp_last_step      bigint,
   created_at      timestamptz NOT NULL DEFAULT now(),
   updated_at      timestamptz NOT NULL DEFAULT now(),
-  CONSTRAINT ck_user_email CHECK (position('@' in email) > 1)
+  CONSTRAINT ck_user_email CHECK (position('@' in email) > 1),
+  CONSTRAINT ck_user_totp CHECK ((totp_enabled_at IS NULL) = (totp_secret IS NULL))
 );
 
 CREATE TABLE user_role (
@@ -75,9 +87,56 @@ CREATE TABLE user_session (
   issued_at   timestamptz NOT NULL DEFAULT now(),
   expires_at  timestamptz NOT NULL,
   revoked_at  timestamptz,
-  ip_address  varchar(64)
+  ip_address  varchar(64),
+  -- Moved forward by use, at most once a minute. A session unused for
+  -- SESSION_IDLE_MINUTES ends even though expires_at has not been reached.
+  last_seen_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX ix_session_user ON user_session(user_id);
+
+-- Single-use, time-limited invitation and password-reset tokens
+-- (FR-AUT-001, FR-AUT-005, FR-AUT-010, FR-AUT-013).
+CREATE TABLE account_token (
+  token_id    uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id     uuid NOT NULL REFERENCES app_user(user_id) ON DELETE CASCADE,
+  purpose     account_token_purpose_enum NOT NULL,
+  -- A SHA-256 of the token, never the token: a reader of this table cannot
+  -- use what it holds. The plain value exists only in the notification.
+  token_hash  bytea NOT NULL UNIQUE,
+  issued_by   uuid REFERENCES app_user(user_id) ON DELETE SET NULL,
+  issued_at   timestamptz NOT NULL DEFAULT now(),
+  expires_at  timestamptz NOT NULL,
+  consumed_at timestamptz,
+  ip_address  varchar(64),
+  CONSTRAINT ck_token_window CHECK (expires_at > issued_at)
+);
+CREATE INDEX ix_account_token_live ON account_token(token_hash) WHERE consumed_at IS NULL;
+CREATE INDEX ix_account_token_user ON account_token(user_id, purpose);
+
+-- The step between a correct password and a correct code. Only a SHA-256 of
+-- the challenge is held, as with account_token.
+CREATE TABLE login_challenge (
+  challenge_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id      uuid NOT NULL REFERENCES app_user(user_id) ON DELETE CASCADE,
+  token_hash   bytea NOT NULL UNIQUE,
+  issued_at    timestamptz NOT NULL DEFAULT now(),
+  expires_at   timestamptz NOT NULL,
+  attempts     int NOT NULL DEFAULT 0,
+  consumed_at  timestamptz,
+  ip_address   varchar(64),
+  CONSTRAINT ck_challenge_window CHECK (expires_at > issued_at)
+);
+CREATE INDEX ix_login_challenge_user ON login_challenge(user_id);
+
+-- Single-use codes for when the phone is not to hand. Held as a keyed HMAC.
+CREATE TABLE recovery_code (
+  code_id    uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id    uuid NOT NULL REFERENCES app_user(user_id) ON DELETE CASCADE,
+  code_hash  bytea NOT NULL UNIQUE,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  used_at    timestamptz
+);
+CREATE INDEX ix_recovery_code_user ON recovery_code(user_id) WHERE used_at IS NULL;
 
 CREATE TABLE login_attempt (
   attempt_id  bigserial PRIMARY KEY,
@@ -209,11 +268,25 @@ CREATE TABLE client_contact (
 );
 CREATE INDEX ix_contact_user ON client_contact(user_id);
 
+-- ISO 4217, limited to the currencies the business invoices in. Adding one is
+-- a row here, once invoices and tax for it are handled; until then any other
+-- code is refused by the foreign keys below. Reference data rather than seed:
+-- the column defaults depend on it.
+CREATE TABLE currency (
+  code        char(3) PRIMARY KEY,
+  name        varchar(60) NOT NULL,
+  minor_units smallint NOT NULL,
+  CONSTRAINT ck_currency_code CHECK (code ~ '^[A-Z]{3}$'),
+  CONSTRAINT ck_currency_minor CHECK (minor_units BETWEEN 0 AND 4)
+);
+INSERT INTO currency (code, name, minor_units) VALUES ('ZAR', 'South African rand', 2);
+
 CREATE TABLE rate_card (
   rate_card_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   client_id    uuid NOT NULL REFERENCES client_company(client_id) ON DELETE CASCADE,
   name         varchar(120) NOT NULL,
-  currency     char(3) NOT NULL DEFAULT 'ZAR',
+  currency     char(3) NOT NULL DEFAULT 'ZAR'
+               CONSTRAINT fk_rate_card_currency REFERENCES currency(code),
   effective_from date NOT NULL,
   effective_to date,
   is_active    boolean NOT NULL DEFAULT true,
@@ -388,7 +461,8 @@ CREATE TABLE invoice (
   period_start   date NOT NULL,
   period_end     date NOT NULL,
   status         invoice_status_enum NOT NULL DEFAULT 'DRAFT',
-  currency       char(3) NOT NULL DEFAULT 'ZAR',
+  currency       char(3) NOT NULL DEFAULT 'ZAR'
+                 CONSTRAINT fk_invoice_currency REFERENCES currency(code),
   subtotal       numeric(14,2) NOT NULL DEFAULT 0,
   vat_rate       numeric(5,2) NOT NULL DEFAULT 0,  -- business not VAT registered (client decision)
   vat_amount     numeric(14,2) NOT NULL DEFAULT 0,

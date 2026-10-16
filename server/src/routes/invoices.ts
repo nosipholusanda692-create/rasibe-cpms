@@ -3,6 +3,8 @@ import { z } from 'zod';
 import { query, withActor } from '../lib/db.js';
 import { badRequest, notFound, conflict, project, assertCapability } from '../lib/errors.js';
 import { requireAuth, requireInternal, requireAdmin } from '../middleware/auth.js';
+import { INVOICE_STATUS, enumList, queryInt } from '../lib/validation.js';
+import { csvDocument } from '../lib/csv.js';
 import { audit, queueNotification } from '../services/notify.js';
 
 export const invoicesRouter = Router();
@@ -15,7 +17,7 @@ export const reportsRouter = Router();
 invoicesRouter.get('/', requireAuth, async (req, res, next) => {
   try {
     const q = z.object({
-      status: z.string().optional(),
+      status: enumList(INVOICE_STATUS).optional(),
       clientId: z.string().uuid().optional(),
     }).parse(req.query);
 
@@ -76,7 +78,7 @@ invoicesRouter.post('/prepare', requireAdmin, async (req, res, next) => {
       clientId: z.string().uuid(),
       periodStart: z.string(),
       periodEnd: z.string(),
-    }).parse(req.body);
+    }).strict().parse(req.body);
 
     const out = await withActor(req.actor!, async (c) => {
       const approved = await c.query(
@@ -245,7 +247,7 @@ invoicesRouter.post('/:id/issue', requireAdmin, async (req, res, next) => {
 invoicesRouter.post('/:id/credit-note', requireAdmin, async (req, res, next) => {
   try {
     const id = z.string().uuid().parse(req.params.id);
-    const b = z.object({ reason: z.string().min(5, 'Give a reason for the credit note') }).parse(req.body);
+    const b = z.object({ reason: z.string().min(5, 'Give a reason for the credit note') }).strict().parse(req.body);
 
     const out = await withActor(req.actor!, async (c) => {
       const orig = await c.query(`SELECT * FROM invoice WHERE invoice_id = $1`, [id]);
@@ -294,14 +296,16 @@ invoicesRouter.post('/:id/export', requireAdmin, async (req, res, next) => {
       const lines = await c.query(`SELECT * FROM invoice_line WHERE invoice_id = $1`, [id]);
       await c.query(`UPDATE invoice SET exported_at = now() WHERE invoice_id = $1`, [id]);
 
-      const header = 'invoice_number,client,date,description,quantity,unit_rate,line_total';
-      const body = lines.rows.map((l: any) =>
-        [inv.rows[0].invoice_number, `"${inv.rows[0].legal_name}"`, inv.rows[0].issued_at?.toISOString?.().slice(0, 10) ?? '',
-         `"${l.description}"`, l.quantity, l.unit_rate, l.line_total].join(',')).join('\n');
-      return `${header}\n${body}`;
+      const i = inv.rows[0];
+      return csvDocument(
+        ['invoice_number', 'client', 'date', 'description', 'quantity', 'unit_rate', 'line_total'],
+        lines.rows.map((l: any) => [
+          i.invoice_number, i.legal_name, i.issued_at, l.description, l.quantity, l.unit_rate, l.line_total,
+        ]),
+      );
     });
 
-    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="invoice-${id}.csv"`);
     res.send(out);
   } catch (e) { next(e); }
@@ -310,7 +314,7 @@ invoicesRouter.post('/:id/export', requireAdmin, async (req, res, next) => {
 invoicesRouter.post('/:id/payment', requireAdmin, async (req, res, next) => {
   try {
     const id = z.string().uuid().parse(req.params.id);
-    const b = z.object({ amount: z.number().min(0) }).parse(req.body);
+    const b = z.object({ amount: z.number().min(0) }).strict().parse(req.body);
     const rows = await query<any>(req.actor!,
       `UPDATE invoice SET amount_paid = amount_paid + $2 WHERE invoice_id = $1 RETURNING *`,
       [id, b.amount]);
@@ -414,7 +418,7 @@ reportsRouter.get('/outstanding-timesheets', requireInternal, async (req, res, n
 
 reportsRouter.get('/placements-ending', requireInternal, async (req, res, next) => {
   try {
-    const days = Number(req.query.days ?? 90);
+    const { days } = z.object({ days: queryInt(0, 3650).default(90) }).parse(req.query);
     const rows = await query(req.actor!,
       `SELECT p.placement_id, p.reference, p.end_date, p.status,
               con.full_name AS consultant_name, cl.legal_name AS client_name,
@@ -448,7 +452,7 @@ reportsRouter.get('/audit', requireAdmin, async (req, res, next) => {
   try {
     assertCapability(req.actor!.role, 'view_audit');
     const q = z.object({
-      entityTable: z.string().optional(),
+      entityTable: z.string().max(60).optional(),
       entityId: z.string().uuid().optional(),
       limit: z.coerce.number().min(1).max(500).default(100),
     }).parse(req.query);
