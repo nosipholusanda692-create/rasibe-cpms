@@ -208,6 +208,20 @@ jobs:
           NOTIFY_SCHEDULE: 'off'
         run: npm run test:notifications
 
+      # Document upload, type checking by content, versions, restricted access
+      # and time-limited downloads. Clears the documents of the consultant it
+      # uses, so it is repeatable.
+      - name: Run the document tests
+        working-directory: server
+        env:
+          PGHOST: localhost
+          PGPORT: 5432
+          PGDATABASE: rasibe
+          PGUSER: rasibe_app
+          PGPASSWORD: rasibe_app_pw
+          NODE_ENV: test
+        run: npm run test:documents
+
       # Serving the built web and mobile clients from the API's origin. Needs
       # no database, and uses fixtures rather than a real build.
       - name: Run the client-serving tests

@@ -1,8 +1,8 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Link, useParams, useNavigate } from 'react-router-dom';
 import {
   api, useAuth, useLoad, useFormError, Card, Status, Loading, Alert, Empty, Person,
-  Field, Modal, ReasonModal, Pager, usePaging, money, date, titleCase,
+  Field, Modal, ReasonModal, csrfHeader, Pager, usePaging, money, date, titleCase,
 } from '../lib';
 import {
   useForm, required, minLength, maxLength, email as emailRule, phone,
@@ -467,24 +467,7 @@ export function ConsultantProfileInner({ id }: { id: string }) {
           )}
 
           {tab === 'documents' && (
-            !(d.documents ?? []).length ? <Empty message="No documents on file." /> : (
-              <table>
-                <thead><tr><th>Document</th><th>Type</th><th>Version</th><th>Expires</th><th>Access</th></tr></thead>
-                <tbody>
-                  {d.documents.map((doc: any) => (
-                    <tr key={doc.documentId}>
-                      <td>{doc.fileName}</td>
-                      <td>{titleCase(doc.type)}</td>
-                      <td className="num">v{doc.version}</td>
-                      <td className="mono">{date(doc.expiresOn)}</td>
-                      <td>{doc.isRestricted
-                        ? <span className="pill pill-amber">Restricted</span>
-                        : <span className="muted small">Standard</span>}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )
+            <Documents consultantId={id} canManage={can('manage_consultants')} isAdmin={isAdmin} />
           )}
 
           {tab === 'vetting' && isAdmin && (
@@ -934,6 +917,179 @@ export function ConsultantProfilePage({ self }: { self?: boolean }) {
         </button>
       )}
       <ConsultantProfileInner id={id} />
+    </>
+  );
+}
+
+/**
+ * A consultant's documents (FR-DOC-001 to 004, 007).
+ *
+ * The list, the upload control and the download. A download is two steps: a
+ * short-lived token is asked for, then followed, so a restricted document is
+ * never served from an address anyone could guess or keep.
+ */
+function Documents({
+  consultantId, canManage, isAdmin,
+}: { consultantId: string; canManage: boolean; isAdmin: boolean }) {
+  const [showHistory, setShowHistory] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
+  const [removing, setRemoving] = useState<any | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [docType, setDocType] = useState('CV');
+
+  const list = useLoad<any>(
+    () => api.get(`/documents?consultantId=${consultantId}&includeSuperseded=${showHistory}`),
+    [consultantId, showHistory],
+  );
+
+  const TYPES = isAdmin
+    ? ['CV', 'CONTRACT', 'CERTIFICATION', 'VETTING', 'ID_DOCUMENT', 'OTHER']
+    : ['CV', 'CONTRACT', 'CERTIFICATION', 'OTHER'];
+
+  async function upload(file: File) {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const form = new FormData();
+      form.append('file', file);
+      form.append('consultantId', consultantId);
+      form.append('docType', docType);
+
+      // Sent without a Content-Type header: the browser sets the multipart
+      // boundary itself, and overriding it breaks the upload.
+      const res = await fetch('/api/documents', {
+        method: 'POST',
+        credentials: 'include',
+        headers: csrfHeader(),
+        body: form,
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body?.message ?? 'Could not upload that file');
+
+      setMsg({ kind: 'success', text: `${file.name} uploaded as version ${body.version}.` });
+      list.reload();
+    } catch (e) {
+      setMsg({ kind: 'error', text: e instanceof Error ? e.message : 'Could not upload' });
+    } finally {
+      setBusy(false);
+      if (fileRef.current) fileRef.current.value = '';
+    }
+  }
+
+  async function download(doc: any) {
+    try {
+      const link = await api.post<any>(`/documents/${doc.document_id}/download-link`, {});
+      // Following the link rather than fetching it, so the browser handles the
+      // download and the file never passes through this code.
+      window.location.href = link.url;
+    } catch (e) {
+      setMsg({ kind: 'error', text: e instanceof Error ? e.message : 'Could not open that document' });
+    }
+  }
+
+  return (
+    <>
+      {msg && <Alert kind={msg.kind}>{msg.text}</Alert>}
+
+      {canManage && (
+        <div className="filters" style={{ borderTop: 0 }}>
+          <Field label="Document type">
+            <select value={docType} onChange={(e) => setDocType(e.target.value)}>
+              {TYPES.map((t) => <option key={t} value={t}>{titleCase(t)}</option>)}
+            </select>
+          </Field>
+          <Field label="File" hint="PDF, Word, JPEG or PNG. Up to 10 MB.">
+            <input
+              ref={fileRef}
+              type="file"
+              accept=".pdf,.doc,.docx,.jpg,.jpeg,.png"
+              disabled={busy}
+              onChange={(e) => { const f = e.target.files?.[0]; if (f) void upload(f); }}
+            />
+          </Field>
+          {busy && <span className="small muted">Uploading…</span>}
+        </div>
+      )}
+
+      {(docType === 'VETTING' || docType === 'ID_DOCUMENT') && canManage && (
+        <div style={{ padding: '0 16px' }}>
+          <Alert kind="warn">
+            A vetting result or an identity document is restricted on upload and is
+            visible to administrators only. Opening one is recorded in the audit log.
+          </Alert>
+        </div>
+      )}
+
+      {list.loading ? <Loading />
+        : list.error ? <Alert kind="error">{list.error}</Alert>
+        : !list.data?.items.length ? <Empty message="No documents on file." />
+        : (
+          <table>
+            <thead>
+              <tr>
+                <th>Document</th><th>Type</th><th className="num">Version</th>
+                <th>Uploaded</th><th>Expires</th><th>Access</th>
+                <th className="right">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {list.data.items.map((doc: any) => (
+                <tr key={doc.document_id} className={doc.is_current ? '' : 'muted'}>
+                  <td>
+                    <strong>{doc.original_name ?? doc.file_name}</strong>
+                    {!doc.is_current && (
+                      <div className="person-role">Superseded</div>
+                    )}
+                  </td>
+                  <td>{titleCase(doc.doc_type)}</td>
+                  <td className="num">v{doc.version}</td>
+                  <td className="mono small">{date(doc.uploaded_at)}</td>
+                  <td className="mono small">{date(doc.expires_on)}</td>
+                  <td>
+                    {doc.is_restricted
+                      ? <span className="pill pill-amber">Restricted</span>
+                      : <span className="muted small">Standard</span>}
+                  </td>
+                  <td className="right">
+                    <div className="btn-row" style={{ justifyContent: 'flex-end' }}>
+                      <button className="btn btn-sm" onClick={() => download(doc)}>Open</button>
+                      {isAdmin && (
+                        <button className="btn btn-sm btn-danger"
+                          onClick={() => setRemoving(doc)}>Remove</button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+
+      <div className="card-foot">
+        <button className="btn btn-sm" onClick={() => setShowHistory((v) => !v)}>
+          {showHistory ? 'Current versions only' : 'Show earlier versions'}
+        </button>
+        <div className="spacer" />
+        <span className="small muted">
+          A replacement is kept as a new version; the previous one is never overwritten.
+        </span>
+      </div>
+
+      {removing && (
+        <ReasonModal
+          title={`Remove ${removing.original_name ?? removing.file_name}`}
+          intent="The file and its versions go. The audit entry recording that you removed it stays."
+          confirmLabel="Remove document"
+          danger
+          onClose={() => setRemoving(null)}
+          onConfirm={async (reason) => {
+            await api.post(`/documents/${removing.document_id}/remove`, { reason });
+            setRemoving(null);
+            setMsg({ kind: 'success', text: 'Document removed.' });
+            list.reload();
+          }} />
+      )}
     </>
   );
 }

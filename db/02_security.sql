@@ -220,7 +220,63 @@ CREATE POLICY p_document_read ON document FOR SELECT USING (
   OR (NOT is_restricted AND is_internal())
   OR (NOT is_restricted AND consultant_id = actor_consultant_id())
 );
-CREATE POLICY p_document_write ON document FOR ALL USING (is_internal()) WITH CHECK (is_internal());
+-- Deliberately not FOR ALL. A FOR ALL policy's USING clause applies to SELECT
+-- as well, and policies are OR'd together, so `FOR ALL USING (is_internal())`
+-- silently granted every recruiter sight of the restricted documents that
+-- p_document_read exists to withhold. The write permissions are therefore
+-- spelled out one command at a time, and none of them grants a read.
+-- The content is reached only through the document row, which carries the
+-- policies above. No permissive policy of its own means a direct read returns
+-- nothing: the API joins from document, and that join decides access.
+ALTER TABLE document_content ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p_document_content ON document_content FOR ALL
+  USING (document_id IN (SELECT d.document_id FROM document d))
+  WITH CHECK (document_id IN (SELECT d.document_id FROM document d));
+
+ALTER TABLE document_token ENABLE ROW LEVEL SECURITY;
+CREATE POLICY p_document_token ON document_token FOR ALL
+  USING (issued_to = actor_id()) WITH CHECK (issued_to = actor_id());
+
+/**
+ * Redeems a download token and returns the document, in one statement so the
+ * same link cannot be spent twice in a race. SECURITY DEFINER because the
+ * caller must not read document_token directly.
+ */
+CREATE OR REPLACE FUNCTION redeem_document_token(p_hash bytea, p_user uuid)
+RETURNS TABLE (document_id uuid, file_name varchar, mime_type varchar, is_restricted boolean)
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $fn$
+DECLARE v_doc uuid;
+BEGIN
+  UPDATE document_token t SET used_at = now()
+   WHERE t.token_hash = p_hash AND t.issued_to = p_user
+     AND t.used_at IS NULL AND t.expires_at > now()
+  RETURNING t.document_id INTO v_doc;
+
+  IF v_doc IS NULL THEN RETURN; END IF;
+
+  RETURN QUERY SELECT d.document_id, d.file_name, d.mime_type, d.is_restricted
+                 FROM document d WHERE d.document_id = v_doc;
+END $fn$;
+
+/** The bytes, for a download already authorised above. */
+CREATE OR REPLACE FUNCTION document_bytes(p_document uuid)
+RETURNS TABLE (bytes bytea, sha256 bytea)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $fn$
+  SELECT c.bytes, c.sha256 FROM document_content c WHERE c.document_id = p_document;
+$fn$;
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON document_content TO rasibe_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON document_token TO rasibe_app;
+GRANT EXECUTE ON FUNCTION redeem_document_token(bytea, uuid) TO rasibe_app;
+GRANT EXECUTE ON FUNCTION document_bytes(uuid) TO rasibe_app;
+
+CREATE POLICY p_document_insert ON document FOR INSERT WITH CHECK (is_internal());
+
+CREATE POLICY p_document_update ON document FOR UPDATE
+  USING (is_admin() OR (NOT is_restricted AND is_internal()))
+  WITH CHECK (is_admin() OR (NOT is_restricted AND is_internal()));
+
+CREATE POLICY p_document_delete ON document FOR DELETE USING (is_admin());
 
 -- Notifications: a user sees only their own.
 CREATE POLICY p_notification_read ON notification FOR SELECT USING (

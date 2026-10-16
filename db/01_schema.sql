@@ -35,6 +35,7 @@ CREATE TYPE audit_action_enum      AS ENUM (
   'TIMESHEET_APPROVED','TIMESHEET_REJECTED','TIMESHEET_OVERRIDDEN','RATE_CHANGED',
   'RATE_APPROVED','INVOICE_ISSUED','INVOICE_CANCELLED','CREDIT_NOTE_RAISED',
   'CONSENT_RECORDED','VETTING_ACCESSED','BANKING_ACCESSED','USER_DEACTIVATED',
+  'DOCUMENT_UPLOADED','DOCUMENT_DOWNLOADED','DOCUMENT_REMOVED',
   'PLACEMENT_TERMINATED','CONSULTANT_ANONYMISED',
   'USER_CREATED','USER_INVITED','USER_REINSTATED','USER_ROLE_CHANGED',
   'PASSWORD_RESET_REQUESTED','PASSWORD_SET',
@@ -528,10 +529,46 @@ CREATE TABLE document (
   expires_on    date,
   uploaded_by   uuid REFERENCES app_user(user_id) ON DELETE SET NULL,
   uploaded_at   timestamptz NOT NULL DEFAULT now(),
+  -- Versions (FR-DOC-004). A replacement does not overwrite: the previous one
+  -- is kept and marked superseded, so what was sent to a client six months ago
+  -- can still be produced.
+  superseded_by uuid REFERENCES document(document_id) ON DELETE SET NULL,
+  is_current    boolean NOT NULL DEFAULT true,
+  -- Taken on upload and checked on download, so a file altered in storage is
+  -- detected rather than served.
+  sha256        bytea,
+  original_name varchar(255),
   CONSTRAINT ck_document_owner CHECK (
     (consultant_id IS NOT NULL)::int + (placement_id IS NOT NULL)::int + (client_id IS NOT NULL)::int = 1)
 );
 CREATE INDEX ix_document_expiry ON document(expires_on);
+
+CREATE INDEX ix_document_current ON document (consultant_id, doc_type) WHERE is_current;
+
+-- The bytes, kept apart from the metadata so a listing never reads them. The
+-- deployed instance runs on a platform whose filesystem is replaced on
+-- restart, so the database is the default store; storage_key names the backend
+-- and the object, and an object-storage backend slots in behind it.
+CREATE TABLE document_content (
+  document_id uuid PRIMARY KEY REFERENCES document(document_id) ON DELETE CASCADE,
+  bytes       bytea NOT NULL,
+  sha256      bytea NOT NULL,
+  stored_at   timestamptz NOT NULL DEFAULT now()
+);
+
+-- Short-lived download permissions (NFR-SEC-009). A document is not served
+-- from a guessable address: a download needs a token issued moments earlier to
+-- the person asking. The token itself is never stored, only its hash.
+CREATE TABLE document_token (
+  token_hash  bytea PRIMARY KEY,
+  document_id uuid NOT NULL REFERENCES document(document_id) ON DELETE CASCADE,
+  issued_to   uuid NOT NULL REFERENCES app_user(user_id) ON DELETE CASCADE,
+  issued_at   timestamptz NOT NULL DEFAULT now(),
+  expires_at  timestamptz NOT NULL,
+  used_at     timestamptz,
+  CONSTRAINT ck_doc_token_window CHECK (expires_at > issued_at)
+);
+CREATE INDEX ix_document_token_live ON document_token (document_id) WHERE used_at IS NULL;
 
 -- BR-020: append-only. UPDATE and DELETE are revoked from the application role.
 CREATE TABLE audit_entry (
