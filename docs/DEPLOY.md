@@ -116,6 +116,21 @@ $env:PGPASSWORD = $env:RASIBE_APP_PASSWORD
 npm run encrypt-existing
 ```
 
+### Which login the API uses
+
+The API must connect as `rasibe_app`, never as `neondb_owner`. The owner has
+`BYPASSRLS` and owns every table, so either alone switches every row-level
+security policy off: a client manager would see every client's data, and nothing
+would fail. The connection string Neon shows by default is the owner's, which
+makes the mistake easy to make when filling in the host's settings.
+
+So the API checks its own login before it listens (`server/src/lib/db-role.ts`).
+In production it refuses to start if the login is a superuser, has `BYPASSRLS`,
+owns any table in `public`, or if a table has policies but row-level security is
+off; it also refuses if it cannot run the check. Outside production it warns
+instead. There is no setting to turn it off. The message names the fault and
+prints no credentials.
+
 ## 5. Take the first backup, and prove it restores
 
 `pg_dump` and `pg_restore` run on this machine, so they need the PostgreSQL 16

@@ -13,6 +13,7 @@ import { logServerError, newErrorId } from './lib/logging.js';
 import { createHttpsServer } from './lib/https.js';
 import { csrf } from './lib/csrf.js';
 import { pool } from './lib/db.js';
+import { enforceAppRole } from './lib/db-role.js';
 
 import { authRouter } from './routes/auth.js';
 import { consultantsRouter } from './routes/consultants.js';
@@ -201,8 +202,16 @@ if (isDirectRun) {
   const server = secure ?? http.createServer(app);
   const scheme = secure ? 'https' : 'http';
 
-  server.listen(port, () => {
-    console.log(`Rasibe CPMS API listening on ${scheme}://localhost:${port}`);
-    console.log(`Health: ${scheme}://localhost:${port}/api/health`);
-  });
+  // Before listening, so a wrong database login never serves a request.
+  enforceAppRole()
+    .then(() => {
+      server.listen(port, () => {
+        console.log(`Rasibe CPMS API listening on ${scheme}://localhost:${port}`);
+        console.log(`Health: ${scheme}://localhost:${port}/api/health`);
+      });
+    })
+    .catch((err) => {
+      console.error(`Refusing to start: ${err instanceof Error ? err.message : err}`);
+      process.exit(1);
+    });
 }
