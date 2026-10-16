@@ -265,11 +265,19 @@ consultantsRouter.patch('/:id', requireAuth, async (req, res, next) => {
       preferredPayRate: 'preferred_pay_rate',
     };
 
-    // a consultant may not reprice themselves
-    const forbiddenForConsultant = ['minPayRate', 'preferredPayRate', 'idNumber'];
+    // A consultant may not reprice themselves, and neither may a recruiter.
+    // Section 4.2 of the requirements gives a recruiter no authority over
+    // rates; only an administrator sets what a consultant is paid, because a
+    // minimum pay rate is what every later margin is measured against.
+    // The edit screen hides these fields for a recruiter, but the screen is
+    // not the control: this is.
+    const rateFields = ['minPayRate', 'preferredPayRate'];
+    const consultantOnlyForbidden = ['idNumber'];
 
     for (const [k, v] of Object.entries(b)) {
-      if (req.actor!.role === 'CONSULTANT' && forbiddenForConsultant.includes(k)) continue;
+      const role = req.actor!.role;
+      if (role !== 'ADMINISTRATOR' && rateFields.includes(k)) continue;
+      if (role === 'CONSULTANT' && consultantOnlyForbidden.includes(k)) continue;
       if (k === 'seniority') { params.push(v); sets.push(`seniority = $${params.length}::seniority_enum`); continue; }
       if (k === 'availability') { params.push(v); sets.push(`availability = $${params.length}::availability_enum`); continue; }
       // NFR-SEC-005. One field in, two columns out: the encrypted value and the

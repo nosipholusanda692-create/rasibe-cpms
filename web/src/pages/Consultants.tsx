@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Link, useParams, useNavigate } from 'react-router-dom';
 import {
   api, useAuth, useLoad, useFormError, Card, Status, Loading, Alert, Empty, Person,
-  Field, Modal, money, date, titleCase,
+  Field, Modal, ReasonModal, money, date, titleCase,
 } from '../lib';
 import {
   useForm, required, minLength, maxLength, email as emailRule, phone,
@@ -36,24 +36,7 @@ export default function Consultants({ skillsView }: { skillsView?: boolean }) {
   );
 
   if (skillsView) {
-    return (
-      <Card title="Skills" subtitle="The taxonomy used for matching consultants to requests">
-        {skills.loading ? <Loading /> : (
-          <table>
-            <thead><tr><th>Skill</th><th>Category</th><th className="num">Consultants</th></tr></thead>
-            <tbody>
-              {skills.data?.items.map((s: any) => (
-                <tr key={s.skill_id}>
-                  <td><strong>{s.name}</strong></td>
-                  <td className="muted">{s.category ?? '—'}</td>
-                  <td className="num">{s.consultant_count}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </Card>
-    );
+    return <SkillsTaxonomy />;
   }
 
   const isClientManager = user?.role === 'CLIENT_MANAGER';
@@ -311,6 +294,8 @@ export function ConsultantProfileInner({ id }: { id: string }) {
   const [tab, setTab] = useState('professional');
   const c = useLoad<any>(() => api.get(`/consultants/${id}`), [id]);
   const [msg, setMsg] = useState<string | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [deactivating, setDeactivating] = useState(false);
 
   if (c.loading) return <Loading />;
   if (c.error) return <Alert kind="error">{c.error}</Alert>;
@@ -325,6 +310,15 @@ export function ConsultantProfileInner({ id }: { id: string }) {
     } catch (e) {
       setMsg(e instanceof Error ? e.message : 'Could not record consent');
     }
+  }
+
+  // FR-CON-013. A consultant is deactivated, never deleted: the placements,
+  // timesheets and invoices behind them are financial records.
+  async function deactivate(reason: string) {
+    await api.post(`/consultants/${id}/deactivate`, { reason });
+    setDeactivating(false);
+    setMsg('Consultant deactivated. They can no longer be submitted to a client.');
+    c.reload();
   }
 
   const tabs = [
@@ -358,6 +352,15 @@ export function ConsultantProfileInner({ id }: { id: string }) {
                   Record consent
                 </button>
               )}
+              {can('manage_consultants') && (
+                <button className="btn btn-sm" onClick={() => setEditing(true)}>Edit</button>
+              )}
+              {can('manage_consultants') && d.is_active !== false && (
+                <button className="btn btn-sm btn-danger" onClick={() => setDeactivating(true)}>
+                  Deactivate
+                </button>
+              )}
+              {d.is_active === false && <span className="pill pill-red">Deactivated</span>}
             </div>
           </div>
         </div>
@@ -509,7 +512,393 @@ export function ConsultantProfileInner({ id }: { id: string }) {
           )}
         </div>
       </Card>
+
+      {editing && (
+        <EditConsultant
+          consultant={d}
+          onClose={() => setEditing(false)}
+          onSaved={() => { setEditing(false); setMsg('Consultant updated.'); c.reload(); }} />
+      )}
+
+      {deactivating && (
+        <ReasonModal
+          title={`Deactivate ${d.full_name ?? 'this consultant'}`}
+          intent="They will no longer appear in search results and cannot be submitted to a client. Existing placements, timesheets and invoices are unaffected, because those are financial records."
+          confirmLabel="Deactivate"
+          danger
+          onClose={() => setDeactivating(false)}
+          onConfirm={deactivate} />
+      )}
     </>
+  );
+}
+
+/**
+ * FR-CFG-005 — the skills taxonomy.
+ *
+ * This is the vocabulary everything else matches on, so it is maintained
+ * deliberately rather than growing by free text on each consultant record.
+ */
+function SkillsTaxonomy() {
+  const { can } = useAuth();
+  const [search, setSearch] = useState('');
+  const [showRetired, setShowRetired] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const [editing, setEditing] = useState<any | null>(null);
+  const [retiring, setRetiring] = useState<any | null>(null);
+  const [msg, setMsg] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
+
+  const list = useLoad<any>(
+    () => api.get(`/skills${search ? `?search=${encodeURIComponent(search)}` : ''}`),
+    [search],
+  );
+
+  const items = (list.data?.items ?? []).filter(
+    (s: any) => showRetired || s.is_active !== false,
+  );
+  const categories = [...new Set(items.map((s: any) => s.category ?? 'Uncategorised'))].sort();
+
+  async function retire(skill: any) {
+    try {
+      const r = await api.post<any>(`/skills/${skill.skill_id}/retire`, {});
+      setRetiring(null);
+      setMsg({
+        kind: 'success',
+        text: r.consultant_count > 0
+          ? `${r.name} retired. It stays on the ${r.consultant_count} consultant record(s) that already carry it.`
+          : `${r.name} retired.`,
+      });
+      list.reload();
+    } catch (e) {
+      setMsg({ kind: 'error', text: e instanceof Error ? e.message : 'Could not retire that skill' });
+    }
+  }
+
+  async function restore(skill: any) {
+    try {
+      await api.patch(`/skills/${skill.skill_id}`, { isActive: true });
+      setMsg({ kind: 'success', text: `${skill.name} is available for matching again.` });
+      list.reload();
+    } catch (e) {
+      setMsg({ kind: 'error', text: e instanceof Error ? e.message : 'Could not restore that skill' });
+    }
+  }
+
+  return (
+    <>
+      {msg && <Alert kind={msg.kind}>{msg.text}</Alert>}
+
+      <Card title="Skills"
+        subtitle={list.data ? `${items.length} skills across ${categories.length} categories` : undefined}
+        action={can('manage_catalogue') && (
+          <button className="btn btn-primary btn-sm" onClick={() => setAdding(true)}>Add skill</button>
+        )}>
+        <div className="filters">
+          <Field label="Search">
+            <input placeholder="Skill name" value={search}
+              onChange={(e) => setSearch(e.target.value)} />
+          </Field>
+          <Field label="Retired skills">
+            <select value={showRetired ? 'yes' : 'no'}
+              onChange={(e) => setShowRetired(e.target.value === 'yes')}>
+              <option value="no">Hide retired</option>
+              <option value="yes">Show retired</option>
+            </select>
+          </Field>
+        </div>
+
+        {list.loading ? <Loading />
+          : list.error ? <Alert kind="error">{list.error}</Alert>
+          : !items.length ? <Empty message="No skills match." />
+          : (
+            <table>
+              <thead>
+                <tr>
+                  <th>Skill</th><th>Category</th>
+                  <th className="num">Consultants</th><th>Status</th>
+                  {can('manage_catalogue') && <th className="right">Actions</th>}
+                </tr>
+              </thead>
+              <tbody>
+                {items.map((sk: any) => (
+                  <tr key={sk.skill_id}>
+                    <td><strong>{sk.name}</strong></td>
+                    <td className="muted">{sk.category ?? '—'}</td>
+                    <td className="num">{sk.consultant_count}</td>
+                    <td>
+                      {sk.is_active === false
+                        ? <span className="pill pill-grey">Retired</span>
+                        : <span className="pill pill-green">In use</span>}
+                    </td>
+                    {can('manage_catalogue') && (
+                      <td className="right">
+                        <div className="btn-row" style={{ justifyContent: 'flex-end' }}>
+                          <button className="btn btn-sm" onClick={() => setEditing(sk)}>Edit</button>
+                          {sk.is_active === false
+                            ? <button className="btn btn-sm" onClick={() => restore(sk)}>Restore</button>
+                            : <button className="btn btn-sm btn-danger"
+                                onClick={() => setRetiring(sk)}>Retire</button>}
+                        </div>
+                      </td>
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+      </Card>
+
+      {(adding || editing) && (
+        <SkillForm
+          skill={editing}
+          onClose={() => { setAdding(false); setEditing(null); }}
+          onSaved={(name) => {
+            setAdding(false); setEditing(null);
+            setMsg({ kind: 'success', text: `${name} saved.` });
+            list.reload();
+          }} />
+      )}
+
+      {retiring && (
+        <Modal title={`Retire ${retiring.name}`} onClose={() => setRetiring(null)}
+          footer={<>
+            <button className="btn" onClick={() => setRetiring(null)}>Cancel</button>
+            <button className="btn btn-danger" onClick={() => retire(retiring)}>Retire skill</button>
+          </>}>
+          <p className="small">
+            {retiring.name} will stop appearing when a consultant or a role request is
+            matched on skills.
+          </p>
+          {retiring.consultant_count > 0 && (
+            <Alert kind="info">
+              It stays on the {retiring.consultant_count} consultant record(s) that already
+              carry it. The proficiency and years recorded against each were entered by
+              hand, so retiring is preferred to deleting.
+            </Alert>
+          )}
+        </Modal>
+      )}
+    </>
+  );
+}
+
+function SkillForm({
+  skill, onClose, onSaved,
+}: { skill: any | null; onClose: () => void; onSaved: (name: string) => void }) {
+  const err = useFormError();
+  const [busy, setBusy] = useState(false);
+
+  const form = useForm(
+    { name: skill?.name ?? '', category: skill?.category ?? '' },
+    {
+      name: [required('A skill name'), minLength(2, 'The name'), maxLength(120, 'The name')],
+      category: [maxLength(80, 'The category')],
+    },
+  );
+
+  async function save() {
+    if (!form.attemptSubmit()) return;
+    setBusy(true); err.clear();
+    try {
+      if (skill) {
+        await api.patch(`/skills/${skill.skill_id}`, {
+          name: form.values.name,
+          category: form.values.category || null,
+        });
+      } else {
+        await api.post('/skills', {
+          name: form.values.name,
+          category: form.values.category || undefined,
+        });
+      }
+      onSaved(form.values.name);
+    } catch (e) {
+      err.capture(e);
+      form.applyServerErrors((e as any)?.detail);
+    } finally { setBusy(false); }
+  }
+
+  return (
+    <Modal title={skill ? `Edit ${skill.name}` : 'Add a skill'} onClose={onClose}
+      footer={<>
+        <button className="btn" onClick={onClose}>Cancel</button>
+        <button className="btn btn-primary" onClick={save}
+          disabled={busy || (form.submitted && !form.isValid)}>
+          {busy ? 'Saving…' : skill ? 'Save changes' : 'Add skill'}
+        </button>
+      </>}>
+      {err.error && <Alert kind="error">{err.error}</Alert>}
+
+      <Field label="Skill name" required error={form.errorFor('name')}
+        hint="As a recruiter would search for it">
+        <input {...form.fieldProps('name')} placeholder="Spring Boot" />
+      </Field>
+
+      <Field label="Category" error={form.errorFor('category')}
+        hint="Groups the skill in the list. Development, Quality, Data, Infrastructure.">
+        <input {...form.fieldProps('category')} />
+      </Field>
+
+      {skill && skill.consultant_count > 0 && (
+        <Alert kind="info">
+          {skill.consultant_count} consultant record(s) carry this skill. Renaming it
+          changes it everywhere, which is the point: the taxonomy is one vocabulary.
+        </Alert>
+      )}
+    </Modal>
+  );
+}
+
+/** FR-CON-001 — amend a consultant record already in the pool. */
+function EditConsultant({
+  consultant, onClose, onSaved,
+}: { consultant: any; onClose: () => void; onSaved: () => void }) {
+  const { user } = useAuth();
+  const err = useFormError();
+  const [busy, setBusy] = useState(false);
+  const isAdmin = user?.role === 'ADMINISTRATOR';
+
+  const form = useForm(
+    {
+      fullName: consultant.full_name ?? '',
+      preferredName: consultant.preferred_name ?? '',
+      email: consultant.email ?? '',
+      mobile: consultant.mobile ?? '',
+      location: consultant.location ?? '',
+      seniority: consultant.seniority ?? 'INTERMEDIATE',
+      headline: consultant.headline ?? '',
+      experienceYears: consultant.experience_years ?? '',
+      availability: consultant.availability ?? 'AVAILABLE',
+      availableFrom: consultant.available_from?.slice(0, 10) ?? '',
+      minPayRate: consultant.min_pay_rate ?? '',
+      preferredPayRate: consultant.preferred_pay_rate ?? '',
+    },
+    {
+      fullName: [required('A full name'), minLength(2, 'The name'), maxLength(200, 'The name')],
+      email: [required('An email address'), emailRule],
+      mobile: [phone],
+      headline: [maxLength(300, 'The headline')],
+      experienceYears: [integer('Experience'), min(0, 'Experience'), max(60, 'Experience')],
+      availableFrom: [(v, f) => (f.availability === 'AVAILABLE_FROM' && !v
+        ? 'Give the date the consultant becomes available' : undefined)],
+      minPayRate: [number('The minimum rate'), min(0, 'The minimum rate')],
+      preferredPayRate: [number('The preferred rate'), min(0, 'The preferred rate')],
+    },
+  );
+
+  const f = form.values;
+
+  async function save() {
+    if (!form.attemptSubmit()) return;
+    setBusy(true); err.clear();
+    try {
+      await api.patch(`/consultants/${consultant.consultant_id}`, {
+        fullName: f.fullName,
+        preferredName: f.preferredName || undefined,
+        email: f.email,
+        mobile: f.mobile || undefined,
+        location: f.location || undefined,
+        seniority: f.seniority,
+        headline: f.headline || undefined,
+        experienceYears: f.experienceYears === '' ? undefined : Number(f.experienceYears),
+        availability: f.availability,
+        availableFrom: f.availability === 'AVAILABLE_FROM' ? f.availableFrom : null,
+        // rates are the administrator's to set; a recruiter may not reprice
+        ...(isAdmin ? {
+          minPayRate: f.minPayRate === '' ? undefined : Number(f.minPayRate),
+          preferredPayRate: f.preferredPayRate === '' ? undefined : Number(f.preferredPayRate),
+        } : {}),
+      });
+      onSaved();
+    } catch (e) {
+      err.capture(e);
+      form.applyServerErrors((e as any)?.detail);
+    } finally { setBusy(false); }
+  }
+
+  return (
+    <Modal title="Edit consultant" onClose={onClose}
+      footer={<>
+        <button className="btn" onClick={onClose}>Cancel</button>
+        <button className="btn btn-primary" onClick={save}
+          disabled={busy || (form.submitted && !form.isValid)}>
+          {busy ? 'Saving…' : 'Save changes'}
+        </button>
+      </>}>
+      {err.error && <Alert kind="error">{err.error}</Alert>}
+
+      <div className="form-row">
+        <Field label="Full name" required error={form.errorFor('fullName')}>
+          <input {...form.fieldProps('fullName')} />
+        </Field>
+        <Field label="Preferred name" hint="Shown to client companies instead of the full name">
+          <input {...form.fieldProps('preferredName')} />
+        </Field>
+      </div>
+
+      <div className="form-row">
+        <Field label="Email address" required error={form.errorFor('email')}>
+          <input type="email" {...form.fieldProps('email')} />
+        </Field>
+        <Field label="Mobile" error={form.errorFor('mobile')}>
+          <input {...form.fieldProps('mobile')} />
+        </Field>
+      </div>
+
+      <Field label="Headline" error={form.errorFor('headline')}>
+        <input {...form.fieldProps('headline')} />
+      </Field>
+
+      <div className="form-row">
+        <Field label="Location"><input {...form.fieldProps('location')} /></Field>
+        <Field label="Seniority">
+          <select {...form.fieldProps('seniority')}>
+            {['JUNIOR', 'INTERMEDIATE', 'SENIOR', 'LEAD', 'PRINCIPAL'].map((x) => (
+              <option key={x} value={x}>{titleCase(x)}</option>
+            ))}
+          </select>
+        </Field>
+      </div>
+
+      <div className="form-row">
+        <Field label="Years of experience" error={form.errorFor('experienceYears')}>
+          <input type="number" min={0} max={60} {...form.fieldProps('experienceYears')} />
+        </Field>
+        <Field label="Availability">
+          <select {...form.fieldProps('availability')}>
+            <option value="AVAILABLE">Available now</option>
+            <option value="AVAILABLE_FROM">Available from</option>
+            <option value="ON_PLACEMENT">On placement</option>
+            <option value="NOT_AVAILABLE">Not available</option>
+          </select>
+        </Field>
+      </div>
+
+      {f.availability === 'AVAILABLE_FROM' && (
+        <Field label="Available from" required error={form.errorFor('availableFrom')}>
+          <input type="date" {...form.fieldProps('availableFrom')} />
+        </Field>
+      )}
+
+      {isAdmin && (
+        <div className="form-row">
+          <Field label="Minimum pay rate" error={form.errorFor('minPayRate')}
+            hint="Never shown to a client">
+            <input type="number" min={0} step="0.01" {...form.fieldProps('minPayRate')} />
+          </Field>
+          <Field label="Preferred pay rate" error={form.errorFor('preferredPayRate')}>
+            <input type="number" min={0} step="0.01" {...form.fieldProps('preferredPayRate')} />
+          </Field>
+        </div>
+      )}
+
+      {f.availability === 'ON_PLACEMENT' && (
+        <Alert kind="info">
+          Availability normally follows from the placement records rather than being
+          set by hand. Setting it here will be overwritten when a placement starts or ends.
+        </Alert>
+      )}
+    </Modal>
   );
 }
 

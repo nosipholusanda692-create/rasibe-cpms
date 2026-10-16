@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { api, useAuth, useLoad, Card, Status, Loading, Alert, Empty, Person, Field, Modal, money, date, titleCase } from '../lib';
+import { api, useAuth, useLoad, Card, Status, Loading, Alert, Empty, Person, Field, Modal, ReasonModal, money, date, titleCase } from '../lib';
 
 /** Placement list. `mine` serves the consultant's own view. */
 export default function Placements({ mine }: { mine?: boolean }) {
@@ -7,6 +7,7 @@ export default function Placements({ mine }: { mine?: boolean }) {
   const [status, setStatus] = useState('');
   const [msg, setMsg] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
   const [rateChange, setRateChange] = useState<any | null>(null);
+  const [terminating, setTerminating] = useState<any | null>(null);
 
   const qs = new URLSearchParams();
   if (status) qs.set('status', status);
@@ -99,7 +100,11 @@ export default function Placements({ mine }: { mine?: boolean }) {
                               onClick={() => approveRates(p.placement_id)}>Approve rates</button>
                           )}
                           {['ACTIVE', 'ENDING_SOON', 'PENDING_START'].includes(p.status) && (
-                            <button className="btn btn-sm" onClick={() => setRateChange(p)}>Change rates</button>
+                            <>
+                              <button className="btn btn-sm" onClick={() => setRateChange(p)}>Change rates</button>
+                              <button className="btn btn-sm btn-danger"
+                                onClick={() => setTerminating(p)}>End early</button>
+                            </>
                           )}
                         </div>
                       </td>
@@ -110,6 +115,24 @@ export default function Placements({ mine }: { mine?: boolean }) {
             </table>
           )}
       </Card>
+
+      {terminating && (
+        <ReasonModal
+          title={`End ${terminating.reference} early`}
+          intent={`${terminating.consultant_name} at ${terminating.client_name} is scheduled to run to ${date(terminating.end_date)}. Ending it now stops further timesheets. Hours already approved remain billable, and an invoice already issued is unaffected.`}
+          confirmLabel="End placement"
+          danger
+          onClose={() => setTerminating(null)}
+          onConfirm={async (reason) => {
+            await api.post(`/placements/${terminating.placement_id}/terminate`, { reason });
+            setTerminating(null);
+            list.reload();
+            setMsg({
+              kind: 'success',
+              text: 'Placement ended. The consultant returns to the available pool.',
+            });
+          }} />
+      )}
 
       {rateChange && (
         <RateChange placement={rateChange} onClose={() => setRateChange(null)}
