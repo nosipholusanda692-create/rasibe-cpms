@@ -116,6 +116,21 @@ $env:PGPASSWORD = $env:RASIBE_APP_PASSWORD
 npm run encrypt-existing
 ```
 
+### Which login the API uses
+
+The API must connect as `rasibe_app`, never as `neondb_owner`. The owner has
+`BYPASSRLS` and owns every table, so either alone switches every row-level
+security policy off: a client manager would see every client's data, and nothing
+would fail. The connection string Neon shows by default is the owner's, which
+makes the mistake easy to make when filling in the host's settings.
+
+So the API checks its own login before it listens (`server/src/lib/db-role.ts`).
+In production it refuses to start if the login is a superuser, has `BYPASSRLS`,
+owns any table in `public`, or if a table has policies but row-level security is
+off; it also refuses if it cannot run the check. Outside production it warns
+instead. There is no setting to turn it off. The message names the fault and
+prints no credentials.
+
 ## 5. Take the first backup, and prove it restores
 
 `pg_dump` and `pg_restore` run on this machine, so they need the PostgreSQL 16
@@ -137,6 +152,48 @@ three keys. A restore without them yields rows nobody can read, so the procedure
 in [BACKUP.md](BACKUP.md) still applies.
 
 Close the window afterwards: the values live only in that session.
+
+## 6. Running the suites against Neon
+
+To prove the API works on Neon itself, run the suites against a copy, never
+the live database. They create fixture accounts, lock and unlock sign-ins,
+revoke sessions and write to the audit trail, none of which can be taken out
+of the live data afterwards.
+
+1. **Branches → Create branch**: name `test-run`, parent `production`,
+   "Branch data and schema", auto-delete after one day. **Connect**, with
+   pooling off, gives its host.
+2. In a new PowerShell window, from `server/`:
+
+```powershell
+function Secret($prompt) { [Net.NetworkCredential]::new('', (Read-Host -AsSecureString $prompt)).Password }
+
+$env:NODE_ENV = 'test'
+$env:PGHOST = '<test-run host>'
+$env:PGDATABASE = 'rasibe'
+$env:PGUSER = 'rasibe_app'
+$env:PGSSLMODE = 'verify-full'
+$env:PGSSLROOTCERT = 'system'
+
+$env:PGPASSWORD          = Secret 'rasibe_app password'
+$env:PASSWORD_PEPPER     = Secret 'PASSWORD_PEPPER'
+$env:DATA_ENCRYPTION_KEY = Secret 'DATA_ENCRYPTION_KEY'
+$env:DATA_INDEX_KEY      = Secret 'DATA_INDEX_KEY'
+
+npm run reset-demo-for-tests
+npm test
+npm run test:accounts
+```
+
+`reset-demo-for-tests` puts the published demonstration password back on every
+account of the copy, and clears lockouts, two-factor and sessions, because that
+is the state the suites sign in from. It refuses the live endpoint and anything
+but `NODE_ENV=test`. The pepper and both keys must be the hosted ones: the
+copy's hashes and encrypted fields were made with them.
+
+`npm test` runs once per copy; a second run finds its own fixtures and fails.
+To run again, delete `test-run` and branch afresh. Delete it under
+**Branches** when finished, and close the window.
 
 ## Alternative: Azure Database for PostgreSQL
 
