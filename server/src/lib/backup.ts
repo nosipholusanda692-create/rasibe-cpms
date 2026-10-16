@@ -3,6 +3,7 @@ import { createHash, createHmac } from 'node:crypto';
 import { createReadStream, createWriteStream } from 'node:fs';
 import { mkdir, readdir, readFile, stat, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import tls from 'node:tls';
 import pg from 'pg';
 import { blindIndex, decrypt, loadKey } from './crypto.js';
 import { sslSetting } from './db.js';
@@ -97,23 +98,50 @@ export function keyFingerprints(): Record<string, string> {
   return result;
 }
 
+const LOCAL_HOSTS = new Set(['', 'localhost', '127.0.0.1', '::1']);
+
 /**
  * pg_dump and pg_restore are run with an argument list, never through a
- * shell. Inside Docker the tools use the container's local socket, so host
- * and port are left out and the password, if any, is forwarded by name.
+ * shell. Inside Docker, a database on this machine is reached through the
+ * container's own socket, so host and port are left out. A database anywhere
+ * else (a managed service such as Neon) is reached over the network from
+ * inside the container, with the SSL settings forwarded by name. Passwords
+ * are forwarded by name too, so they never appear in a command line.
  */
-function pgTool(conn: OwnerConnection, tool: 'pg_dump' | 'pg_restore', args: string[], database: string) {
-  const target = conn.dockerContainer
+async function pgTool(conn: OwnerConnection, tool: 'pg_dump' | 'pg_restore', args: string[], database: string) {
+  const remote = !LOCAL_HOSTS.has(conn.host);
+  const target = conn.dockerContainer && !remote
     ? ['-U', conn.user, '-d', database]
     : ['-h', conn.host, '-p', String(conn.port), '-U', conn.user, '-d', database];
-  const env = { ...process.env, PGPASSWORD: conn.password ?? process.env.PGPASSWORD ?? '' };
+  const env: NodeJS.ProcessEnv = { ...process.env, PGPASSWORD: conn.password ?? process.env.PGPASSWORD ?? '' };
   if (conn.dockerContainer) {
-    return spawn('docker', ['exec', '-i', '-e', 'PGPASSWORD', conn.dockerContainer, tool, ...args, ...target], {
+    const names = ['-e', 'PGPASSWORD'];
+    if (env.PGSSLMODE) names.push('-e', 'PGSSLMODE');
+    if (remote && env.PGSSLROOTCERT === 'system') {
+      // The container has no certificate store of its own, and a file path on
+      // this machine means nothing inside it. The public roots Node trusts
+      // are installed instead, so the server's certificate is still verified.
+      await installCaBundle(conn.dockerContainer);
+      names.push('-e', `PGSSLROOTCERT=${CONTAINER_CA}`);
+    }
+    return spawn('docker', ['exec', '-i', ...names, conn.dockerContainer, tool, ...args, ...target], {
       env,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
   }
   return spawn(tool, [...args, ...target], { env, stdio: ['pipe', 'pipe', 'pipe'] });
+}
+
+const CONTAINER_CA = '/tmp/rasibe-ca.pem';
+
+/** Public root certificates only: nothing in this file is secret. */
+async function installCaBundle(container: string): Promise<void> {
+  const child = spawn('docker', ['exec', '-i', container, 'sh', '-c', `cat > ${CONTAINER_CA}`], {
+    stdio: ['pipe', 'ignore', 'pipe'],
+  });
+  const done = finished(child, 'docker exec');
+  child.stdin?.end(`${tls.rootCertificates.join('\n')}\n`);
+  await done;
 }
 
 function finished(child: ReturnType<typeof spawn>, tool: string): Promise<void> {
@@ -168,7 +196,7 @@ export async function runBackup(conn: OwnerConnection, dir: string, now = new Da
     const snapshot = (await c.query<{ id: string }>('SELECT pg_export_snapshot() AS id')).rows[0].id;
     const tables = await tableCounts(c);
 
-    const dump = pgTool(conn, 'pg_dump', ['--format=custom', `--snapshot=${snapshot}`], conn.database);
+    const dump = await pgTool(conn, 'pg_dump', ['--format=custom', `--snapshot=${snapshot}`], conn.database);
     dump.stdin?.end();
     const hash = createHash('sha256');
     let bytes = 0;
@@ -236,7 +264,7 @@ export async function restoreBackup(conn: OwnerConnection, manifestPath: string,
     await admin.end();
   }
 
-  const restore = pgTool(conn, 'pg_restore', ['--exit-on-error', '--no-owner'], target);
+  const restore = await pgTool(conn, 'pg_restore', ['--exit-on-error', '--no-owner'], target);
   // A pg_restore that fails early closes its input; its exit code reports that.
   restore.stdin?.on('error', () => undefined);
   createReadStream(dumpPath).pipe(restore.stdin!);

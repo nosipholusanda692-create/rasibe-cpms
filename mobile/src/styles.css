@@ -288,6 +288,28 @@ body {
 .screen.has-tabs.has-actions { padding-bottom: calc(66px + var(--action-h) + var(--safe-bottom)); }
 .actions.above-tabs { bottom: calc(66px + var(--safe-bottom)); padding-bottom: 12px; }
 
+/* ------------------------------------------------------------ two-factor */
+a.btn { text-decoration: none; }
+.link-row { color: inherit; text-decoration: none; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: .04em; }
+.qr { display: block; margin: 0 auto 14px; border: 1px solid var(--line); border-radius: 8px; }
+.codes {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 8px 14px; margin-bottom: 14px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 15px;
+  background: var(--canvas); border: 1px solid var(--line); border-radius: 9px; padding: 12px 14px;
+}
+.check { display: flex; gap: 10px; align-items: flex-start; font-size: 14px; margin-bottom: 14px; }
+.check input { width: 20px; height: 20px; flex: 0 0 20px; margin-top: 1px; }
+.btn-stack { display: flex; flex-direction: column; gap: 10px; }
+/* One-off message above the tab bar, so it is seen but does not cover the page. */
+.notice-bar {
+  position: fixed; left: 12px; right: 12px; bottom: calc(66px + var(--safe-bottom)); z-index: 25;
+  display: flex; align-items: center; gap: 8px; padding: 10px 10px 10px 14px;
+  background: var(--amber-bg); color: var(--amber); border-radius: 10px;
+  font-size: 13.5px; line-height: 1.4; box-shadow: var(--shadow);
+}
+.notice-bar .btn { min-height: 40px; padding: 0 10px; color: var(--amber); }
+
 /* A field the person has left in an invalid state. Colour alone is not the
    signal: the message under the field carries the meaning (NFR-USA-006). */
 input[aria-invalid="true"],

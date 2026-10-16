@@ -40,6 +40,13 @@ npm run dev          # http://localhost:5174
 To use it from a real phone on the same network, the dev server already listens
 on all interfaces. Find your machine's address and open `http://<address>:5174`.
 
+### As the API serves it
+
+`npm run build` makes a production build with its base set to `/m/`. With the
+API running, it is served at `http://localhost:4000/m/`, next to the staff web
+client at `/` (docs/DEPLOY.md, section 6). `npm run dev` is unaffected and
+stays at the root of port 5174.
+
 ### Demonstration accounts
 
 Password `Password123!` for both. The sign-in screen lists them; tap a row to

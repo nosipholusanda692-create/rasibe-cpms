@@ -1,11 +1,14 @@
 import { useState } from 'react';
-import { useAuth, Banner } from '../lib';
+import { useAuth, ApiError, Banner } from '../lib';
 import ForgotPassword from './ForgotPassword';
 
 
 export default function SignIn() {
-  const { signIn } = useAuth();
+  const { signIn, verifyCode } = useAuth();
   const [forgot, setForgot] = useState(false);
+  // After a correct password, an account with two-factor is asked for a code.
+  const [step, setStep] = useState<'password' | 'code'>('password');
+  const [code, setCode] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [touched, setTouched] = useState<{ email?: boolean; password?: boolean }>({});
@@ -24,12 +27,44 @@ export default function SignIn() {
     setBusy(true);
     setError(null);
     try {
-      await signIn(email, password);
+      const r = await signIn(email, password);
+      if ('twoFactorRequired' in r) {
+        setPassword('');
+        setCode('');
+        setStep('code');
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not sign in');
     } finally {
       setBusy(false);
     }
+  }
+
+  async function submitCode(e: React.FormEvent) {
+    e.preventDefault();
+    if (code.trim().length < 6) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await verifyCode(code);
+    } catch (err) {
+      if (err instanceof ApiError && err.code === 'two_factor_expired') {
+        // Five minutes passed or five wrong codes: the password step starts again.
+        setStep('password');
+        setError(err.message);
+      } else {
+        setError(err instanceof Error ? err.message : 'Could not check that code');
+        setCode('');
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function backToPassword() {
+    setStep('password');
+    setCode('');
+    setError(null);
   }
 
   if (forgot) return <ForgotPassword onBack={() => setForgot(false)} />;
@@ -50,6 +85,28 @@ export default function SignIn() {
       </p>
 
       <div className="signin-panel">
+        {step === 'code' ? (
+          <form onSubmit={submitCode}>
+            {error && <Banner kind="error">{error}</Banner>}
+            <div className="sheet-title">Enter your code</div>
+            <p className="small muted" style={{ marginTop: 4 }}>
+              Open your authenticator app and enter the six digits it shows for Rasibe.
+              Lost your phone? Enter one of your recovery codes instead.
+            </p>
+            <div className="field">
+              <label>Code</label>
+              <input type="text" value={code} autoComplete="one-time-code" inputMode="text"
+                autoCapitalize="none" autoFocus maxLength={20} placeholder="123456"
+                onChange={(e) => setCode(e.target.value)} />
+            </div>
+            <button className="btn btn-primary btn-block" type="submit"
+              disabled={busy || code.trim().length < 6}>
+              {busy ? 'Checking…' : 'Sign in'}
+            </button>
+            <button type="button" className="btn btn-block" style={{ marginTop: 10 }}
+              onClick={backToPassword}>Use a different account</button>
+          </form>
+        ) : (
         <form onSubmit={submit}>
           {error && <Banner kind="error">{error}</Banner>}
 
@@ -79,6 +136,7 @@ export default function SignIn() {
               onClick={() => setForgot(true)}>Forgotten your password?</button>
           </div>
         </form>
+        )}
 
       </div>
     </div>

@@ -113,8 +113,15 @@ npm run restore -- --verify-only backups/rasibe-20261011T021500Z.json rasibe
 ### Without PostgreSQL installed locally
 
 `pg_dump` and `pg_restore` are run as programs. On a machine without them, set
-`PG_DOCKER_CONTAINER` to a running PostgreSQL 16 container and they run inside
-it, for example the throwaway database used for tests:
+`PG_DOCKER_CONTAINER` to a running PostgreSQL container of the server's major
+version or newer (Neon runs 18; `pg_dump` refuses a newer server) and they run inside
+it, for example the throwaway database used for tests. A database on this
+machine is reached through the container's socket. A database elsewhere (such
+as Neon) is reached over the network from inside the container, with
+`PGSSLMODE` passed through; with `PGSSLROOTCERT=system` the public root
+certificates are installed in the container so the certificate is still
+verified. Back up from the remote host, then restore into the local container
+by running `restore` with `BACKUP_PGHOST=localhost` and `PGSSLMODE` unset.
 
 ```powershell
 $env:PG_DOCKER_CONTAINER = 'rasibe-ci'

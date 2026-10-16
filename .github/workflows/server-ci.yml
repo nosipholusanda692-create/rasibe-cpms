@@ -108,3 +108,11 @@ jobs:
           PGPASSWORD: rasibe_app_pw
           NODE_ENV: test
         run: npm run test:2fa
+
+      # Serving the built web and mobile clients from the API's origin. Needs
+      # no database, and uses fixtures rather than a real build.
+      - name: Run the client-serving tests
+        working-directory: server
+        env:
+          NODE_ENV: test
+        run: npm run test:clients

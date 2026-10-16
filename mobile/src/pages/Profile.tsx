@@ -1,8 +1,9 @@
+import { Link } from 'react-router-dom';
 import { useAuth, useLoad, api, readQueue, fmtDate, titleCase, Banner, Empty } from '../lib';
 
 /** Account, placements and anything still held on the device. */
 export default function Profile() {
-  const { user, signOut } = useAuth();
+  const { user, twoFactor, signOut } = useAuth();
   const placements = useLoad<any>(() => api.get('/placements'));
   const queued = readQueue();
 
@@ -19,6 +20,22 @@ export default function Profile() {
           <div className="sheet-sub">{user?.email}</div>
           <div className="sheet-sub">{titleCase(user?.role)}</div>
         </div>
+      </section>
+
+      <section className="card">
+        <Link to="/account/security" className="list-row link-row">
+          <div className="stack" style={{ flex: 1 }}>
+            <span className="sheet-title">Sign-in security</span>
+            <span className="sheet-sub">
+              {twoFactor.enabled
+                ? 'Two-factor authentication is on'
+                : 'Add a code from an app to protect your account'}
+            </span>
+          </div>
+          <span className={`pill pill-${twoFactor.enabled ? 'green' : 'grey'}`}>
+            {twoFactor.enabled ? 'On' : 'Off'}
+          </span>
+        </Link>
       </section>
 
       {queued.length > 0 && (

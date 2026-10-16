@@ -15,6 +15,7 @@ import { csrf } from './lib/csrf.js';
 import { pool, closePool } from './lib/db.js';
 import { enforceAppRole } from './lib/db-role.js';
 import { installProcessGuards, makeShutdown } from './lib/resilience.js';
+import { clientDirsFromEnv, mountClients, type ClientDirs } from './lib/clients.js';
 
 import { authRouter } from './routes/auth.js';
 import { consultantsRouter } from './routes/consultants.js';
@@ -68,7 +69,11 @@ function canonicalHost(raw: string | undefined): string {
   return raw;
 }
 
-export function createApp() {
+/**
+ * `clients` says which built front ends to serve from this origin. It defaults
+ * to whatever has been built (lib/clients.ts); a test passes its own.
+ */
+export function createApp(options: { clients?: ClientDirs; pageLoadsPerMinute?: number } = {}) {
   const app = express();
 
   const trustProxy = process.env.TRUST_PROXY;
@@ -98,9 +103,20 @@ export function createApp() {
       // The two framing controls have to agree. A browser that understands
       // frame-ancestors ignores X-Frame-Options entirely, so leaving the
       // default 'self' here would quietly undo the deny above.
+      // The defaults already suit the built clients: scripts, the manifest and
+      // the service worker only from this origin, no plugins, no foreign
+      // forms, images from here or as data: (the QR code is drawn as one).
+      // Styles keep helmet's 'unsafe-inline' because React writes style
+      // attributes; scripts do not get it. See docs/DEPLOY.md.
       contentSecurityPolicy: {
         useDefaults: true,
-        directives: { frameAncestors: ["'none'"] },
+        directives: {
+          frameAncestors: ["'none'"],
+          // Helmet's default rewrites every subresource to https, which a
+          // plain-http local run (and Safari on localhost) cannot satisfy.
+          // Where it matters the host serves https, so it stays on there.
+          upgradeInsecureRequests: process.env.NODE_ENV === 'production' ? [] : null,
+        },
       },
     }),
   );
@@ -118,6 +134,10 @@ export function createApp() {
       res.redirect(308, `https://${host}${req.originalUrl}`);
     });
   }
+
+  // Before the session middleware on purpose: a page or a script is the same
+  // for everyone and should not cost a database lookup.
+  mountClients(app, options.clients ?? clientDirsFromEnv(), options.pageLoadsPerMinute);
 
   app.use(
     cors({

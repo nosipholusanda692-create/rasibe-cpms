@@ -5,6 +5,7 @@ import MyWeek from './pages/MyWeek';
 import Approvals from './pages/Approvals';
 import Notifications from './pages/Notifications';
 import Profile from './pages/Profile';
+import Security from './pages/Security';
 
 /**
  * The mobile client serves two roles only: the consultant who records hours and
@@ -39,7 +40,7 @@ function TabBar() {
 }
 
 function Shell({ children }: { children: React.ReactNode }) {
-  const { user, loading } = useAuth();
+  const { user, loading, signOut } = useAuth();
   if (loading) return <Loading />;
   if (!user) return <SignIn />;
 
@@ -59,13 +60,31 @@ function Shell({ children }: { children: React.ReactNode }) {
               Consultant search, placements, invoicing and reporting are on the web
               application. Sign in there instead.
             </p>
+            {/* Both apps share one sign-in when the API serves them (docs/DEPLOY.md),
+                so a person signed in on the web would otherwise be stuck here. */}
+            <div className="btn-stack">
+              <a className="btn btn-primary btn-block" href="/">Open the web application</a>
+              <button className="btn btn-block" onClick={() => void signOut()}>Sign out</button>
+            </div>
           </div>
         </section>
       </div>
     );
   }
 
-  return (<>{children}<TabBar /></>);
+  return (<>{children}<Notice /><TabBar /></>);
+}
+
+/** A one-off message after sign-in, such as recovery codes running low. */
+function Notice() {
+  const { notice, clearNotice } = useAuth();
+  if (!notice) return null;
+  return (
+    <div className="notice-bar" role="status">
+      <span>{notice}</span>
+      <button className="btn btn-ghost" onClick={clearNotice}>Dismiss</button>
+    </div>
+  );
 }
 
 function Home() {
@@ -76,13 +95,15 @@ function Home() {
 export default function App() {
   return (
     <AuthProvider>
-      <BrowserRouter>
+      {/* BASE_URL is /m/ in a build and / in `npm run dev` (vite.config.ts). */}
+      <BrowserRouter basename={import.meta.env.BASE_URL.replace(/\/$/, '') || '/'}>
         <Routes>
           <Route path="/" element={<Shell><Home /></Shell>} />
           <Route path="/week" element={<Shell><MyWeek /></Shell>} />
           <Route path="/approvals" element={<Shell><Approvals /></Shell>} />
           <Route path="/notifications" element={<Shell><Notifications /></Shell>} />
           <Route path="/account" element={<Shell><Profile /></Shell>} />
+          <Route path="/account/security" element={<Shell><Security /></Shell>} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>

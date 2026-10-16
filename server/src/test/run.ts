@@ -1766,6 +1766,64 @@ async function main() {
       restored.body.items.every((s: any) => s.setting_value === original(s.setting_key)));
 
     // ------------------------------------------------------------------
+    section('Settings are administrator-only, and money actions are audited (NFR-SEC-002, NFR-SEC-011)');
+
+    // Company banking details and tax numbers are in the list.
+    // The shared consultant session was ended by the sign-out checks above.
+    const consultantAgain = new Client('consultant again');
+    await consultantAgain.login('thabo.m@example.co.za');
+    const settingsReads = [
+      await recruiter.get('/settings'), await consultantAgain.get('/settings'),
+      await clientMgr.get('/settings'), await new Client('signed out').get('/settings'),
+    ];
+    check('a recruiter, consultant and client manager are refused the settings list',
+      settingsReads.slice(0, 3).every((r) => r.status === 403), settingsReads.map((r) => r.status));
+    check('someone not signed in is refused too', settingsReads[3].status === 401, settingsReads[3].status);
+    check('the administrator still reads them',
+      (await admin.get('/settings')).status === 200 && settingsBefore.body.items.length > 10);
+    check('and a recruiter still may not change one',
+      (await recruiter.put('/settings/vat_rate', { value: '15' })).status === 403);
+
+    const settingAudit = async () => {
+      const r = await admin.get('/reports/audit?entityTable=system_setting&limit=200');
+      return (r.body.items as any[]).filter((x) => x.action === 'SETTING_CHANGED');
+    };
+    const rateEntries = async () =>
+      (await settingAudit()).filter((x) => x.new_value?.setting === 'vat_rate');
+
+    const rateBefore = (await rateEntries()).length;
+    await putSetting('vat_rate', '7');
+    const rateOne = await rateEntries();
+    check('changing a setting is audited with the value it replaced',
+      rateOne.length === rateBefore + 1
+        && rateOne.some((x) => x.new_value.value === '7' && x.previous_value.value !== '7'),
+      rateOne.slice(0, 2));
+    await putSetting('vat_rate', '7');
+    check('saving the value a setting already has records nothing',
+      (await rateEntries()).length === rateOne.length);
+    await putSetting('vat_rate', original('vat_rate'));
+
+    const invoiceAudit = await admin.get(`/reports/audit?entityTable=invoice&entityId=${invId}`);
+    const invoiceActions = (invoiceAudit.body.items as any[]);
+    const approvedEntry = invoiceActions.find((x) => x.action === 'INVOICE_APPROVED');
+    check('approving an invoice is audited, with the status it moved from',
+      approvedEntry?.previous_value?.status === 'AWAITING_APPROVAL' && approvedEntry?.new_value?.status === 'APPROVED',
+      invoiceActions.map((x) => x.action));
+
+    const pay = await admin.post(`/invoices/${invId}/payment`, { amount: 1 });
+    check('a payment can be recorded against the issued invoice', pay.status === 200, pay.body);
+    const afterPay = await admin.get(`/reports/audit?entityTable=invoice&entityId=${invId}`);
+    const payEntry = (afterPay.body.items as any[]).find((x) => x.action === 'PAYMENT_RECORDED');
+    check('recording a payment is audited with the balance before and after',
+      payEntry !== undefined
+        && Number(payEntry.new_value.amountPaid) === Number(payEntry.previous_value.amountPaid) + 1,
+      payEntry);
+    check('a payment on an invoice that does not exist is a 404, not an audit row',
+      (await admin.post('/invoices/00000000-0000-4000-8000-000000000000/payment', { amount: 1 })).status === 404);
+    check('only an administrator may record a payment',
+      (await recruiter.post(`/invoices/${invId}/payment`, { amount: 1 })).status === 403);
+
+    // ------------------------------------------------------------------
     section('Database faults do not end the process');
 
     // The error handler must be present: an idle connection that the server
