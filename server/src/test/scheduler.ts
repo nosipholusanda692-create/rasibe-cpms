@@ -56,33 +56,102 @@ async function main() {
     // ------------------------------------------------------------------
     section('Setting up the boundary cases');
     // ------------------------------------------------------------------
+    // Earlier suites in a shared run terminate placements, and the status
+    // trigger rightly refuses to move one back from TERMINATED to ACTIVE. So
+    // this suite inserts placements of its own where it needs them, for
+    // consultants who hold none, which keeps BR-001 satisfied.
+    const live = await sql<{ n: number }>(
+      `SELECT count(*)::int AS n FROM placement WHERE status IN ('ACTIVE','ENDING_SOON')`);
+
+    if (live[0].n < 2) {
+      const free = await sql(
+        `SELECT c.consultant_id FROM consultant c
+          WHERE c.is_active
+            AND NOT EXISTS (
+              SELECT 1 FROM placement p
+               WHERE p.consultant_id = c.consultant_id
+                 AND p.status IN ('ACTIVE','ENDING_SOON'))
+          LIMIT 3`);
+      const client = await sql(`SELECT client_id FROM client_company LIMIT 1`);
+      const admin = await sql(`SELECT user_id FROM app_user LIMIT 1`);
+
+      for (const [i, f] of free.entries()) {
+        await sql(
+          `INSERT INTO placement (reference, consultant_id, client_id, job_title,
+                                  start_date, end_date, bill_rate, pay_rate, status,
+                                  rate_approved_by, rate_approved_at)
+           VALUES ($1,$2,$3,'Scheduler suite placement',
+                   current_date - 30, current_date + 120, 900, 600, 'ACTIVE', $4, now())
+           ON CONFLICT (reference) DO NOTHING`,
+          [`SCH-${Date.now()}-${i}`, f.consultant_id, client[0].client_id, admin[0].user_id]);
+      }
+    }
+
     const placements = await sql(
       `SELECT placement_id, consultant_id, end_date FROM placement
         WHERE status IN ('ACTIVE','ENDING_SOON') ORDER BY reference LIMIT 3`,
     );
     check('there are live placements to work with', placements.length >= 2, placements.length);
 
-    // a week that ended yesterday and was never submitted
     const lastWeekStart = daysFromNow(-8);
-    await sql(
+
+    // A week that ended recently and was never submitted, against a placement
+    // whose consultant actually has an account — a reminder with nobody to
+    // send it to is not raised, so the choice matters.
+    const withAccount = await sql(
+      `SELECT p.placement_id FROM placement p
+         JOIN consultant c ON c.consultant_id = p.consultant_id
+        WHERE p.status IN ('ACTIVE','ENDING_SOON') AND c.user_id IS NOT NULL
+        ORDER BY p.reference LIMIT 1`);
+    check('a placement whose consultant has an account exists',
+      withAccount.length === 1, withAccount.length);
+
+    const reminderPlacement = withAccount[0].placement_id;
+
+    // Removed rather than upserted: moving an approved or invoiced week back to
+    // draft is a transition the trigger rightly refuses, and this suite is not
+    // the place to argue with it.
+    await sql('DELETE FROM timesheet WHERE placement_id = $1 AND week_start = $2::date',
+      [reminderPlacement, lastWeekStart]);
+    const madeWeek = await sql(
       `INSERT INTO timesheet (placement_id, week_start, week_end, status)
        VALUES ($1, $2::date, $2::date + 6, 'DRAFT')
-       ON CONFLICT (placement_id, week_start) DO UPDATE SET status = 'DRAFT'`,
-      [placements[0].placement_id, lastWeekStart],
-    );
+       RETURNING timesheet_id`,
+      [reminderPlacement, lastWeekStart]);
+
+    await sql(`DELETE FROM notification WHERE dedupe_key LIKE '%' || $1 || '%'`,
+      [madeWeek[0].timesheet_id]);
 
     // a placement ending in exactly 60 days
+    const alertPlacement = (await sql(
+      `SELECT placement_id FROM placement
+        WHERE status IN ('ACTIVE','ENDING_SOON') AND placement_id <> $1
+        ORDER BY reference LIMIT 1`, [reminderPlacement]))[0]?.placement_id
+      ?? placements[1].placement_id;
+
+    // Keys raised for this placement by a previous run of this suite are
+    // cleared first. Leaving them would make the suite pass once and then
+    // report nothing, because refusing to raise the same alert twice is
+    // exactly what it is asserting elsewhere.
     await sql(
-      `UPDATE placement SET end_date = ($2::date) WHERE placement_id = $1`,
-      [placements[1].placement_id, daysFromNow(60)],
-    );
+      `DELETE FROM notification
+        WHERE dedupe_key LIKE '%' || $1 || '%'`,
+      [alertPlacement]);
+
+    await sql(`UPDATE placement SET end_date = ($2::date) WHERE placement_id = $1`,
+      [alertPlacement, daysFromNow(60)]);
 
     // a certification expiring in exactly 30 days
-    await sql(
+    const cert = await sql(
       `UPDATE certification SET expires_on = ($1::date)
-        WHERE certification_id = (SELECT certification_id FROM certification LIMIT 1)`,
+        WHERE certification_id = (SELECT certification_id FROM certification LIMIT 1)
+      RETURNING certification_id`,
       [daysFromNow(30)],
     );
+    if (cert.length) {
+      await sql(`DELETE FROM notification WHERE dedupe_key LIKE '%' || $1 || '%'`,
+        [cert[0].certification_id]);
+    }
 
     const before = await sql<{ n: number }>(
       'SELECT count(*)::int AS n FROM notification WHERE dedupe_key IS NOT NULL');
@@ -135,9 +204,12 @@ async function main() {
       endingAlerts.length > 0 && endingAlerts.every((a: any) => a.role === 'ADMINISTRATOR'),
       endingAlerts.map((a: any) => a.role));
 
+    // scoped to this suite's own placement: an earlier suite may have moved a
+    // different placement onto the last threshold and raised one legitimately
     const consultantAlert = await sql(
       `SELECT count(*)::int AS n FROM notification
-        WHERE dedupe_key LIKE 'PLACEMENT_ENDING_CONSULTANT:%'`);
+        WHERE dedupe_key = 'PLACEMENT_ENDING_CONSULTANT:' || $1 || ':60'`,
+      [alertPlacement]);
     check('a consultant is not told 60 days out',
       consultantAlert[0].n === 0, consultantAlert[0].n);
 
@@ -158,7 +230,7 @@ async function main() {
     section('The last threshold reaches everybody');
     // ------------------------------------------------------------------
     await sql(`UPDATE placement SET end_date = ($2::date) WHERE placement_id = $1`,
-      [placements[1].placement_id, daysFromNow(14)]);
+      [alertPlacement, daysFromNow(14)]);
 
     const atFourteen = await raiseScheduledNotifications();
     check('the 14 day threshold raises again', atFourteen.placementsEnding > 0, atFourteen);
@@ -181,7 +253,7 @@ async function main() {
     section('A placement away from a threshold is left alone');
     // ------------------------------------------------------------------
     await sql(`UPDATE placement SET end_date = ($2::date) WHERE placement_id = $1`,
-      [placements[1].placement_id, daysFromNow(45)]);
+      [alertPlacement, daysFromNow(45)]);
 
     const offThreshold = await raiseScheduledNotifications();
     check('45 days out raises nothing',

@@ -23,7 +23,11 @@
     "restore": "tsx src/scripts/restore.ts",
     "notify:send": "tsx src/scripts/send-notifications.ts",
     "mail:verify": "tsx src/scripts/verify-mail.ts",
-    "notify:raise": "tsx src/scripts/raise-notifications.ts"
+    "notify:raise": "tsx src/scripts/raise-notifications.ts",
+    "test:scheduler": "tsx src/test/scheduler.ts",
+    "test:notifications": "tsx src/test/notifications.ts",
+    "test:paging": "tsx src/test/paging.ts",
+    "test:validation": "tsx src/test/validation.ts"
   },
   "dependencies": {
     "@node-rs/argon2": "^2.2.2",

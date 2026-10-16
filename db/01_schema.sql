@@ -576,11 +576,31 @@ CREATE TABLE notification (
   -- Delivery bookkeeping for the dispatcher (migrations-006-notification-delivery.sql).
   attempts     int NOT NULL DEFAULT 0,
   next_attempt_at timestamptz,
+  -- Set by the scheduler so a reminder cannot be raised twice
+  -- (migrations-008-notification-dedupe.sql). See the unique index below.
+  dedupe_key   varchar(200),
   read_at      timestamptz
 );
 CREATE INDEX ix_notification_recipient ON notification(recipient_user_id, read_at);
 CREATE INDEX ix_notification_pending ON notification(sent_at) WHERE sent_at IS NULL;
 CREATE INDEX ix_notification_due ON notification(scheduled_for) WHERE sent_at IS NULL;
+
+-- The scheduler runs repeatedly and must not raise the same reminder twice.
+-- The key names the thing and the occasion; this index is what makes a second
+-- attempt fail rather than duplicate. Partial, so the notifications raised by
+-- ordinary business actions carry no key and do not compete for it.
+CREATE UNIQUE INDEX ux_notification_dedupe
+  ON notification (dedupe_key)
+  WHERE dedupe_key IS NOT NULL;
+
+-- One row per scheduled job: when it last completed and how much it raised.
+-- A job that has never run has no row.
+CREATE TABLE scheduler_run (
+  job          varchar(60) PRIMARY KEY,
+  last_run_at  timestamptz NOT NULL DEFAULT now(),
+  raised       int NOT NULL DEFAULT 0,
+  detail       text
+);
 
 CREATE TABLE data_retention_rule (
   rule_id      uuid PRIMARY KEY DEFAULT gen_random_uuid(),

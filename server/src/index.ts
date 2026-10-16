@@ -246,6 +246,18 @@ if (isDirectRun) {
       server.listen(port, () => {
         console.log(`Rasibe CPMS API listening on ${scheme}://localhost:${port}`);
         console.log(`Health: ${scheme}://localhost:${port}/api/health`);
+
+        // Started after the server is listening, so a slow first query cannot
+        // delay the port opening and a health check never arrives before the
+        // process is ready.
+        //
+        // Both stand down when told to: NOTIFY_DISPATCH=off stops delivery,
+        // NOTIFY_SCHEDULE=off stops reminders being raised. With no SMTP_HOST
+        // configured the dispatcher writes to the log instead of sending, so a
+        // deployment that wants the notification list populated without any
+        // mail leaving the building simply leaves SMTP_HOST unset.
+        startDispatcher();
+        startScheduler();
       });
     })
     .catch((err) => {

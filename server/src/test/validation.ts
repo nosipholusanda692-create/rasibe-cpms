@@ -94,8 +94,16 @@ async function main() {
 
     const clients = await recruiter.get('/clients');
     const clientId = clients.body.items[0].client_id;
-    const pool = await recruiter.get('/consultants?availability=AVAILABLE');
-    const freeConsultant = pool.body.items[0];
+    // A consultant of this suite's own. Reusing a seeded one makes the result
+    // depend on whether an earlier suite has already placed them, and the
+    // whole point here is that a valid placement is accepted.
+    const made = await recruiter.post('/consultants', {
+      fullName: `Validation Suite ${Date.now()}`,
+      email: `validation.${Date.now()}@example.co.za`,
+      seniority: 'SENIOR',
+      availability: 'AVAILABLE',
+    });
+    const freeConsultant = made.body;
 
     // ------------------------------------------------------------------
     section('Consultant details');
@@ -190,18 +198,20 @@ async function main() {
     // ------------------------------------------------------------------
     section('Timesheet hours (BR-004, BR-016)');
     // ------------------------------------------------------------------
-    // A week of its own, so the suite does not depend on the state another
-    // suite left behind. A past week is still editable and still refuses
-    // future-dated hours, which is what is being tested.
-    const monday = (() => {
+    // A week of its own. Walking back until an editable one is found, because
+    // the suites before this one submit and approve weeks, and which weeks are
+    // still open depends on what they did.
+    let sheet: any = null;
+    let monday = '';
+    for (let back = 1; back <= 8 && !sheet; back += 1) {
       const d = new Date();
       const dow = d.getUTCDay() === 0 ? 7 : d.getUTCDay();
-      d.setUTCDate(d.getUTCDate() - (dow - 1) - 14);
-      return d.toISOString().slice(0, 10);
-    })();
-    const week = await consultant.get(`/timesheets/my/current?weekStart=${monday}`);
-    const sheet = (week.body.items ?? []).find((t: any) =>
-      ['DRAFT', 'PENDING_SYNC', 'REJECTED'].includes(t.status));
+      d.setUTCDate(d.getUTCDate() - (dow - 1) - back * 7);
+      monday = d.toISOString().slice(0, 10);
+      const week = await consultant.get(`/timesheets/my/current?weekStart=${monday}`);
+      sheet = (week.body.items ?? []).find((t: any) =>
+        ['DRAFT', 'PENDING_SYNC', 'REJECTED'].includes(t.status));
+    }
 
     if (sheet) {
       const future = new Date(Date.now() + 10 * 86_400_000).toISOString().slice(0, 10);
@@ -227,7 +237,8 @@ async function main() {
       });
       check('negative hours are refused', negativeHours.status === 400, negativeHours.body);
     } else {
-      check('the consultant has an editable week to test against', false, week.body);
+      check('the consultant has an editable week to test against', false,
+        'no draft week in the last eight weeks');
     }
 
     // ------------------------------------------------------------------

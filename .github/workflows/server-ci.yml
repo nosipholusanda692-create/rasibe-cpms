@@ -109,6 +109,36 @@ jobs:
           NODE_ENV: test
         run: npm run test:2fa
 
+      # The server still refuses what the forms refuse. Reads only, so it is
+      # safe anywhere, but it needs an editable week and a consultant with no
+      # placement, which later suites consume.
+      - name: Run the validation tests
+        working-directory: server
+        env:
+          PGHOST: localhost
+          PGPORT: 5432
+          PGDATABASE: rasibe
+          PGUSER: rasibe_app
+          PGPASSWORD: rasibe_app_pw
+          NODE_ENV: test
+        run: npm run test:validation
+
+      # Raising scheduled reminders, and raising them only once. Needs live
+      # placements and unsubmitted weeks, so it runs before the suites that
+      # terminate and approve.
+      - name: Run the scheduler tests
+        working-directory: server
+        env:
+          PGHOST: localhost
+          PGPORT: 5432
+          PGDATABASE: rasibe
+          PGUSER: rasibe_app
+          PGPASSWORD: rasibe_app_pw
+          NODE_ENV: test
+          NOTIFY_DISPATCH: 'off'
+          NOTIFY_SCHEDULE: 'off'
+        run: npm run test:scheduler
+
       # The consultant, skills and placement screens' endpoints, including the
       # reason recorded when a consultant is deactivated. Runs after the other
       # database suites because it ends a placement and deactivates a record.
@@ -149,6 +179,34 @@ jobs:
           PGPASSWORD: rasibe_app_pw
           NODE_ENV: test
         run: npm run test:retention
+
+      # Paging across the list endpoints. Seeds 60 consultants of its own, so
+      # it runs after the suites that count what is in the pool.
+      - name: Run the paging tests
+        working-directory: server
+        env:
+          PGHOST: localhost
+          PGPORT: 5432
+          PGDATABASE: rasibe
+          PGUSER: rasibe_app
+          PGPASSWORD: rasibe_app_pw
+          NODE_ENV: test
+        run: npm run test:paging
+
+      # The notification list and unread count, and that one person cannot
+      # read or clear another's. Depends on the scheduler suite above.
+      - name: Run the notification tests
+        working-directory: server
+        env:
+          PGHOST: localhost
+          PGPORT: 5432
+          PGDATABASE: rasibe
+          PGUSER: rasibe_app
+          PGPASSWORD: rasibe_app_pw
+          NODE_ENV: test
+          NOTIFY_DISPATCH: 'off'
+          NOTIFY_SCHEDULE: 'off'
+        run: npm run test:notifications
 
       # Serving the built web and mobile clients from the API's origin. Needs
       # no database, and uses fixtures rather than a real build.
