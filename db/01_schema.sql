@@ -39,7 +39,8 @@ CREATE TYPE audit_action_enum      AS ENUM (
   'USER_CREATED','USER_INVITED','USER_REINSTATED','USER_ROLE_CHANGED',
   'PASSWORD_RESET_REQUESTED','PASSWORD_SET',
   'TWO_FACTOR_ENABLED','TWO_FACTOR_DISABLED','TWO_FACTOR_RESET','RECOVERY_CODE_USED',
-  'SETTING_CHANGED','INVOICE_APPROVED','PAYMENT_RECORDED');
+  'SETTING_CHANGED','INVOICE_APPROVED','PAYMENT_RECORDED',
+  'CONSULTANT_DEACTIVATED');
 CREATE TYPE account_token_purpose_enum AS ENUM ('INVITE', 'RESET');
 
 -- ---------------------------------------------------------------------
@@ -566,10 +567,14 @@ CREATE TABLE notification (
   scheduled_for timestamptz NOT NULL DEFAULT now(),
   sent_at      timestamptz,
   delivery_outcome varchar(200),
+  -- Delivery bookkeeping for the dispatcher (migrations-006-notification-delivery.sql).
+  attempts     int NOT NULL DEFAULT 0,
+  next_attempt_at timestamptz,
   read_at      timestamptz
 );
 CREATE INDEX ix_notification_recipient ON notification(recipient_user_id, read_at);
 CREATE INDEX ix_notification_pending ON notification(sent_at) WHERE sent_at IS NULL;
+CREATE INDEX ix_notification_due ON notification(scheduled_for) WHERE sent_at IS NULL;
 
 CREATE TABLE data_retention_rule (
   rule_id      uuid PRIMARY KEY DEFAULT gen_random_uuid(),

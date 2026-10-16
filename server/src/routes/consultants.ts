@@ -366,13 +366,42 @@ consultantsRouter.put('/:id/skills', requireInternal, async (req, res, next) => 
   }
 });
 
+/**
+ * FR-CON-013. A consultant is deactivated, never deleted: the placements,
+ * timesheets and invoices behind them are financial records.
+ *
+ * The reason is required and goes into the audit log in the same transaction
+ * as the change, so the record never shows a consultant removed from the pool
+ * without saying why or by whom (NFR-SEC-011).
+ */
 consultantsRouter.post('/:id/deactivate', requireInternal, async (req, res, next) => {
   try {
     const id = z.string().uuid().parse(req.params.id);
-    const rows = await query<any>(req.actor!,
-      `UPDATE consultant SET is_active = false WHERE consultant_id = $1
-       RETURNING consultant_id, is_active`, [id]);
-    if (!rows.length) throw notFound('Consultant not found');
+    const b = z
+      .object({
+        reason: z.string().trim().min(5, 'Give a reason of at least five characters').max(500),
+      })
+      .strict()
+      .parse(req.body ?? {});
+
+    const rows = await withActor(req.actor!, async (c) => {
+      const r = await c.query(
+        `UPDATE consultant SET is_active = false WHERE consultant_id = $1
+         RETURNING consultant_id, is_active`,
+        [id],
+      );
+      if (!r.rows.length) throw notFound('Consultant not found');
+      await audit(c, {
+        actorUserId: req.actor!.userId,
+        action: 'CONSULTANT_DEACTIVATED',
+        entityTable: 'consultant',
+        entityId: id,
+        previous: { is_active: true },
+        next: { is_active: false },
+        reason: b.reason,
+      });
+      return r.rows;
+    });
     res.json(rows[0]);
   } catch (e) {
     next(e);

@@ -184,6 +184,25 @@ async function main() {
       !listed.body.items.some((s: any) => s.skill_id === created.body.skill_id),
       listed.body.items.length);
 
+    // The maintenance screen has to be able to list retired skills, or a
+    // retired one could never be restored.
+    const withRetired = await recruiter.get('/skills?includeRetired=true');
+    const retiredRow = withRetired.body.items?.find((s: any) => s.skill_id === created.body.skill_id);
+    check('a retired skill is listed when the maintenance screen asks for it',
+      retiredRow?.is_active === false, retiredRow);
+    check('every listed skill says whether it is active',
+      withRetired.body.items.every((s: any) => typeof s.is_active === 'boolean'));
+
+    const seenByConsultant = await consultant.get('/skills?includeRetired=true');
+    check('a consultant is not shown retired skills, even when they ask',
+      !seenByConsultant.body.items.some((s: any) => s.skill_id === created.body.skill_id));
+    const seenByClient = await clientMgr.get('/skills?includeRetired=true');
+    check('a client manager is not shown retired skills, even when they ask',
+      !seenByClient.body.items.some((s: any) => s.skill_id === created.body.skill_id));
+
+    const badFlag = await recruiter.get('/skills?includeRetired=maybe');
+    check('an unclear includeRetired value is refused', badFlag.status === 400, badFlag.status);
+
     const restored = await recruiter.patch(`/skills/${created.body.skill_id}`, { isActive: true });
     check('a retired skill can be restored', restored.status === 200 && restored.body.is_active === true);
 
@@ -236,10 +255,38 @@ async function main() {
     });
     check('a consultant can be added for the test', fresh.status === 201);
 
+    // The reason is what makes this an auditable act, so it is required.
+    const noReasonGiven = await recruiter.post(`/consultants/${fresh.body.consultant_id}/deactivate`, {});
+    check('deactivating without a reason is refused', noReasonGiven.status === 400, noReasonGiven.status);
+    const tooShort = await recruiter.post(`/consultants/${fresh.body.consultant_id}/deactivate`, {
+      reason: 'no',
+    });
+    check('a two-character reason is refused', tooShort.status === 400, tooShort.status);
+    const extraField = await recruiter.post(`/consultants/${fresh.body.consultant_id}/deactivate`, {
+      reason: 'Left the contracting market', isActive: true,
+    });
+    check('an unexpected field is refused', extraField.status === 400, extraField.status);
+    const byConsultant = await consultant.post(`/consultants/${fresh.body.consultant_id}/deactivate`, {
+      reason: 'A consultant attempting to deactivate somebody',
+    });
+    check('a consultant cannot deactivate anyone', byConsultant.status === 403, byConsultant.status);
+    const byClient = await clientMgr.post(`/consultants/${fresh.body.consultant_id}/deactivate`, {
+      reason: 'A client manager attempting to deactivate somebody',
+    });
+    check('a client manager cannot deactivate anyone', byClient.status === 403, byClient.status);
+    const stillActive = await admin.get(`/consultants/${fresh.body.consultant_id}`);
+    check('none of the refused attempts changed the consultant', stillActive.body.is_active !== false);
+
     const gone = await recruiter.post(`/consultants/${fresh.body.consultant_id}/deactivate`, {
       reason: 'Left the contracting market',
     });
     check('a consultant can be deactivated', gone.status === 200, gone.body);
+
+    const trail = await admin.get(`/reports/audit?entityTable=consultant&entityId=${fresh.body.consultant_id}`);
+    const entry = trail.body.items?.find((a: any) => a.action === 'CONSULTANT_DEACTIVATED');
+    check('the deactivation is in the audit log', !!entry, trail.body.items?.map((a: any) => a.action));
+    check('the reason is recorded with it', entry?.reason === 'Left the contracting market', entry?.reason);
+    check('the audit entry names who did it', !!entry?.actor_name, entry?.actor_name);
 
     const search = await recruiter.get('/consultants');
     check('a deactivated consultant leaves the search results',
