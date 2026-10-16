@@ -39,9 +39,19 @@ INSERT INTO role_capability (role, capability) VALUES
  ('ADMINISTRATOR','view_banking'), ('ADMINISTRATOR','view_vetting'),
  ('ADMINISTRATOR','manage_users'), ('ADMINISTRATOR','view_audit'),
  ('ADMINISTRATOR','manage_catalogue'), ('ADMINISTRATOR','manage_settings'),
+ -- An administrator can do anything a recruiter can, by definition of the role.
+ -- The server's capability map has always said so; this is the table the
+ -- clients build their buttons from, and it must agree with it.
+ ('ADMINISTRATOR','manage_consultants'), ('ADMINISTRATOR','manage_clients'),
+ ('ADMINISTRATOR','submit_candidate'), ('ADMINISTRATOR','create_placement'),
+ ('ADMINISTRATOR','review_candidates'), ('ADMINISTRATOR','raise_request'),
+ ('ADMINISTRATOR','approve_timesheet'), ('ADMINISTRATOR','view_reports'),
+ ('ADMINISTRATOR','manage_own_profile'),
  ('RECRUITER','manage_catalogue'), ('RECRUITER','manage_consultants'),
  ('RECRUITER','manage_clients'), ('RECRUITER','submit_candidate'),
  ('RECRUITER','create_placement'), ('RECRUITER','view_reports'),
+ ('RECRUITER','review_candidates'), ('RECRUITER','raise_request'),
+ ('RECRUITER','manage_own_profile'),
  ('CONSULTANT','submit_timesheet'), ('CONSULTANT','manage_own_profile'),
  ('CLIENT_MANAGER','raise_request'), ('CLIENT_MANAGER','review_candidates'),
  ('CLIENT_MANAGER','approve_timesheet');
