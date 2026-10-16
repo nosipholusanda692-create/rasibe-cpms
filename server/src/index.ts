@@ -26,6 +26,7 @@ import { invoicesRouter, dashboardRouter, reportsRouter } from './routes/invoice
 import { notificationsRouter } from './routes/notifications.js';
 import { settingsRouter } from './routes/settings.js';
 import { usersRouter } from './routes/users.js';
+import { startDispatcher } from './services/dispatcher.js';
 
 /**
  * Express accepts a hop count, a boolean, or a list of addresses.

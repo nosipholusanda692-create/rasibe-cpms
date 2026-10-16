@@ -6,6 +6,7 @@ import type { Request, Response } from 'express';
 import { anonQuery, query, withActor } from '../lib/db.js';
 import { badRequest, conflict, forbidden, notFound, unauthorised, AppError } from '../lib/errors.js';
 import { checkBreached } from '../lib/breached.js';
+import { mailConfigured } from '../services/mailer.js';
 import { hashPassword, needsRehash, spendDecoyComparison, verifyPassword } from '../lib/passwords.js';
 import { fieldErrors } from '../lib/validation.js';
 import {
@@ -766,8 +767,10 @@ authRouter.post('/forgot-password', async (req, res, next) => {
 
     res.json({
       ...answer,
-      // Development only: no mail is delivered, so the link would be unreachable.
-      resetLink: process.env.NODE_ENV === 'production' ? undefined : link,
+      // Shown only when there is no mail server to deliver it. Once SMTP is
+      // configured the link goes to the person who asked for it and nowhere
+      // else, which is the whole point of a reset link.
+      resetLink: mailConfigured() ? undefined : link,
     });
   } catch (e) { next(e); }
 });

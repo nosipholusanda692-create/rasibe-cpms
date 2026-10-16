@@ -2,10 +2,6 @@ import { useState } from 'react';
 import { useAuth, Banner } from '../lib';
 import ForgotPassword from './ForgotPassword';
 
-const DEMO = [
-  ['Consultant', 'thabo.m@example.co.za'],
-  ['Client manager', 's.naidoo@nedgroupit.co.za'],
-];
 
 export default function SignIn() {
   const { signIn } = useAuth();
@@ -84,22 +80,6 @@ export default function SignIn() {
           </div>
         </form>
 
-        {import.meta.env.DEV && (
-        <div style={{ marginTop: 18, borderTop: '1px solid var(--line-soft)', paddingTop: 12 }}>
-          <div className="field-hint" style={{ marginBottom: 6 }}>Demonstration accounts</div>
-          {DEMO.map(([role, mail]) => (
-            <div className="demo-row" key={mail}
-              onClick={() => { setEmail(mail); setPassword('Password123!'); }}>
-              <div className="stack" style={{ flex: 1 }}>
-                <span className="demo-role">{role}</span>
-                <span className="demo-mail">{mail}</span>
-              </div>
-              <span className="pill pill-grey">Use</span>
-            </div>
-          ))}
-          <div className="field-hint">Password: Password123!</div>
-        </div>
-        )}
       </div>
     </div>
   );

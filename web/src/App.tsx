@@ -156,28 +156,6 @@ setBusy(false);
       </div>
     </div>
 
-    {import.meta.env.DEV && (
-    <div style={{ marginTop: 20, borderTop: '1px solid var(--line)', paddingTop: 14 }}>
-      <div className="tile-label" style={{ marginBottom: 8 }}>Demonstration accounts</div>
-      <table className="small">
-        <tbody>
-          {[
-            ['Administrator', 'christinah@rasibe.co.za'],
-            ['Recruiter', 'nosipho@rasibe.co.za'],
-            ['Consultant', 'thabo.m@example.co.za'],
-            ['Client manager', 's.naidoo@nedgroupit.co.za'],
-          ].map(([role, mail]) => (
-            <tr key={mail} className="clickable"
-              onClick={() => { setEmail(mail); setPassword('Password123!'); }}>
-              <td style={{ padding: '4px 0', border: 0 }}><strong>{role}</strong></td>
-              <td style={{ padding: '4px 0', border: 0 }} className="muted">{mail}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      <div className="field-hint">Password for all: Password123! — click a row to fill it in.</div>
-    </div>
-    )}
   </form>
   )}
 </div>

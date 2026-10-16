@@ -6,6 +6,7 @@ import { badRequest, notFound, conflict, assertCapability } from '../lib/errors.
 import { requireAdmin } from '../middleware/auth.js';
 import { ROLES, queryBool, searchText, fieldErrors, optionalReason } from '../lib/validation.js';
 import { audit, queueNotification } from '../services/notify.js';
+import { mailConfigured } from '../services/mailer.js';
 
 export const usersRouter = Router();
 
@@ -204,9 +205,9 @@ usersRouter.post('/', requireAdmin, async (req, res, next) => {
 
     res.status(201).json({
       user: out,
-      // Returned only in development, where no mail is delivered and the
-      // administrator would otherwise have no way to pass the link on.
-      inviteLink: process.env.NODE_ENV === 'production' ? undefined : inviteLink(req, plain, 'invite'),
+      // Returned only when there is no mail server, where the administrator
+      // would otherwise have no way to pass the invitation on.
+      inviteLink: mailConfigured() ? undefined : inviteLink(req, plain, 'invite'),
     });
   } catch (e) { next(e); }
 });
@@ -251,7 +252,7 @@ usersRouter.post('/:id/invite', requireAdmin, async (req, res, next) => {
     res.json({
       ok: true,
       email: out.email,
-      inviteLink: process.env.NODE_ENV === 'production' ? undefined : inviteLink(req, plain, 'invite'),
+      inviteLink: mailConfigured() ? undefined : inviteLink(req, plain, 'invite'),
     });
   } catch (e) { next(e); }
 });
