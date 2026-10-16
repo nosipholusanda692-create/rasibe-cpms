@@ -2,7 +2,7 @@
 
 | Part | Where |
 |---|---|
-| Database | Neon, managed PostgreSQL 16, AWS Europe Central 1 (Frankfurt) |
+| Database | Neon, managed PostgreSQL 18, AWS Europe Central 1 (Frankfurt) |
 | API and web client | One web app; Express serves `web/dist` |
 | API and mobile client | A second web app; Express serves `mobile/dist` |
 
@@ -133,10 +133,25 @@ prints no credentials.
 
 ## 5. Take the first backup, and prove it restores
 
-`pg_dump` and `pg_restore` run on this machine, so they need the PostgreSQL 16
-command line tools on the `PATH` (the installer's "Command Line Tools" component
-is enough). Leave `PG_DOCKER_CONTAINER` unset: the container cannot see the
-host's trust store.
+`pg_dump` and `pg_restore` must be the same major version as the server or
+newer, and Neon runs PostgreSQL 18, so PostgreSQL 16 tools stop with "server
+version mismatch". Either put the version 18 command line tools on the `PATH`, or
+set `PG_DOCKER_CONTAINER` to a running `postgres:18` container. The 16 container
+the test suites use will not do. A throwaway one that only listens on this machine:
+
+```powershell
+docker run -d --name rasibe-pg18 -e POSTGRES_PASSWORD=postgres -p 127.0.0.1:55434:5432 postgres:18
+```
+
+In Docker mode the tools reach Neon over the network
+from inside the container. The container has no certificate store, so the backup
+installs the public root certificates Node trusts into the container's `/tmp`
+and still verifies Neon's certificate (`PGSSLMODE=verify-full` with
+`PGSSLROOTCERT=system`). No secret goes into the container's files; the password
+is passed by name.
+
+Use the **direct** host (pooling off). A backup takes a snapshot, and Neon's
+pooler cannot hold one open.
 
 ```powershell
 $env:BACKUP_DIR = 'C:\rasibe\backups'
@@ -146,6 +161,23 @@ npm run restore -- C:\rasibe\backups\<newest>.json rasibe_restore_check
 
 The restore goes into a new database and checks every count, encrypted value and
 key fingerprint. Delete `rasibe_restore_check` under **Databases** once it passes.
+
+To practise the restore without touching Neon, restore into the `postgres:18`
+container instead: set `BACKUP_PGHOST=localhost`, `BACKUP_PGPORT=55434`,
+`BACKUP_PGUSER=postgres` and `BACKUP_PGPASSWORD=postgres`, and clear `PGSSLMODE`
+and `PGSSLROOTCERT`. A Neon dump grants to Neon's own platform roles, so create
+them in the container first, or `pg_restore` stops on the first one:
+
+```powershell
+docker exec -i rasibe-pg18 psql -U postgres -d postgres -c "CREATE ROLE rasibe_app NOLOGIN;" -c "CREATE ROLE rasibe_reporting NOLOGIN;" -c "CREATE ROLE cloud_admin NOLOGIN;" -c "CREATE ROLE neon_superuser NOLOGIN;"
+```
+
+Remove the container afterwards (`docker rm -f rasibe-pg18`): it holds a copy of
+the data.
+
+First drill, 2026-10-16: backup of the live database (31 tables, 143 rows)
+restored into a scratch database; every row count, key fingerprint, encrypted
+value and identity fingerprint checked out.
 
 Neon keeps its own history for point-in-time restore, but it holds none of the
 three keys. A restore without them yields rows nobody can read, so the procedure
