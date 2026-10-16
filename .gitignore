@@ -16,6 +16,10 @@ coverage/
 *.csr
 *.p12
 *.pfx
+# An Azure publish profile can deploy to the live app. It belongs in the
+# AZURE_WEBAPP_PUBLISH_PROFILE secret, never in the repository.
+*.PublishSettings
+*.publishsettings
 id_rsa
 id_rsa.pub
 
