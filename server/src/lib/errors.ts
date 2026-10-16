@@ -87,6 +87,36 @@ export function translateDbError(err: any): AppError {
     process.env.NODE_ENV === 'production' ? undefined : message);
 }
 
+/**
+ * A database that is slow, restarting, full of connections or out of reach is
+ * not a bug in the request and not a reason to say "something went wrong": the
+ * same request is likely to work in a moment. 503 tells the client that, and
+ * lets the screen say so.
+ *
+ * Matches the SQLSTATEs for a cancelled statement (the timeout we set), a server
+ * shutting down or not yet accepting connections, too many connections, and the
+ * connection-exception class; and the driver's and the network's own messages,
+ * which carry no SQLSTATE.
+ */
+const TRANSIENT_CODES = new Set(['57014', '57P01', '57P02', '57P03', '53300', '53400']);
+const TRANSIENT_MESSAGE =
+  /timeout exceeded when trying to connect|Query read timeout|Connection terminated|Client has encountered a connection error|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|EPIPE|EAI_AGAIN/i;
+
+export function transientFault(err: any): AppError | null {
+  const code: string | undefined = typeof err?.code === 'string' ? err.code : undefined;
+  const message: string = typeof err?.message === 'string' ? err.message : '';
+  const transient =
+    (code !== undefined && (TRANSIENT_CODES.has(code) || code.startsWith('08'))) ||
+    TRANSIENT_MESSAGE.test(message) ||
+    (code !== undefined && TRANSIENT_MESSAGE.test(code));
+  if (!transient) return null;
+  return new AppError(
+    503,
+    'The service is busy or temporarily unavailable. Please try again in a moment.',
+    'service_unavailable',
+  );
+}
+
 // ---------------------------------------------------------------------
 // Field-level projection
 //

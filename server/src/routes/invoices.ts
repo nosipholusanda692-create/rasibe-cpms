@@ -5,6 +5,7 @@ import { badRequest, notFound, conflict, project, assertCapability } from '../li
 import { requireAuth, requireInternal, requireAdmin } from '../middleware/auth.js';
 import { INVOICE_STATUS, enumList, queryInt } from '../lib/validation.js';
 import { csvDocument } from '../lib/csv.js';
+import { roundMoney } from '../lib/money.js';
 import { audit, queueNotification } from '../services/notify.js';
 
 export const invoicesRouter = Router();
@@ -116,6 +117,12 @@ invoicesRouter.post('/prepare', requireAdmin, async (req, res, next) => {
       const vatRate = vatRegistered
         ? Number((await c.query(`SELECT setting_value FROM system_setting WHERE setting_key = 'vat_rate'`)).rows[0]?.setting_value ?? 0)
         : 0;
+      // Saving a setting checks it, but a value stored before that check, or
+      // edited in the database, can still be wrong. Say what to fix rather than
+      // produce an invoice with a total of NaN.
+      if (!Number.isFinite(vatRate) || vatRate < 0 || vatRate > 100) {
+        throw badRequest('The VAT rate in Settings is not a valid percentage. Correct it, then prepare the invoice again.');
+      }
 
       const inv = await c.query(
         `INSERT INTO invoice (client_id, period_start, period_end, status, vat_rate)
@@ -132,8 +139,8 @@ invoicesRouter.post('/prepare', requireAdmin, async (req, res, next) => {
         const rate = Number(t.bill_rate);
 
         if (std > 0) {
-          const total = +(std * rate).toFixed(2);
-          subtotal += total;
+          const total = roundMoney(std * rate);
+          subtotal = roundMoney(subtotal + total);
           const l = await c.query(
             `INSERT INTO invoice_line (invoice_id, timesheet_id, line_type, description,
                                        quantity, unit_rate, line_total)
@@ -144,9 +151,9 @@ invoicesRouter.post('/prepare', requireAdmin, async (req, res, next) => {
         }
         // overtime is a separate line per rate kind rather than blended in
         if (ot > 0) {
-          const otRate = +(rate * Number(t.overtime_multiplier ?? 1.5)).toFixed(2);
-          const total = +(ot * otRate).toFixed(2);
-          subtotal += total;
+          const otRate = roundMoney(rate * Number(t.overtime_multiplier ?? 1.5));
+          const total = roundMoney(ot * otRate);
+          subtotal = roundMoney(subtotal + total);
           const l = await c.query(
             `INSERT INTO invoice_line (invoice_id, timesheet_id, line_type, description,
                                        quantity, unit_rate, line_total)
@@ -157,11 +164,11 @@ invoicesRouter.post('/prepare', requireAdmin, async (req, res, next) => {
         }
       }
 
-      const vatAmount = +(subtotal * vatRate / 100).toFixed(2);
+      const vatAmount = roundMoney(subtotal * vatRate / 100);
       const updated = await c.query(
         `UPDATE invoice SET subtotal = $2, vat_amount = $3, total = $4, status = 'AWAITING_APPROVAL'
           WHERE invoice_id = $1 RETURNING *`,
-        [invoiceId, subtotal, vatAmount, +(subtotal + vatAmount).toFixed(2)]);
+        [invoiceId, subtotal, vatAmount, roundMoney(subtotal + vatAmount)]);
 
       return { invoice: updated.rows[0], lines, outstanding: outstanding.rows,
                message: outstanding.rows.length

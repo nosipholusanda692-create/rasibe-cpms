@@ -5,18 +5,19 @@ import { api, useLoad, Card, Loading, Alert, Field } from '../lib';
 export default function Settings() {
   const s = useLoad<any>(() => api.get('/settings'));
   const [edits, setEdits] = useState<Record<string, string>>({});
-  const [msg, setMsg] = useState<string | null>(null);
+  const [msg, setMsg] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
 
   async function saveOne(key: string) {
     setBusy(true);
     try {
-      await api.put(`/settings/${key}`, { value: edits[key] });
-      setMsg(`Updated ${key.replace(/_/g, ' ')}.`);
+      await api.put(`/settings/${encodeURIComponent(key)}`, { value: edits[key] });
+      setMsg({ kind: 'success', text: `Updated ${key.replace(/_/g, ' ')}.` });
       setEdits((e) => { const n = { ...e }; delete n[key]; return n; });
       s.reload();
     } catch (e) {
-      setMsg(e instanceof Error ? e.message : 'Could not save');
+      // The value stays in the box so it can be corrected, not retyped.
+      setMsg({ kind: 'error', text: e instanceof Error ? e.message : 'Could not save' });
     } finally { setBusy(false); }
   }
 
@@ -25,7 +26,7 @@ export default function Settings() {
 
   return (
     <>
-      {msg && <Alert kind="success">{msg}</Alert>}
+      {msg && <Alert kind={msg.kind}>{msg.text}</Alert>}
       <Card title="System settings"
         subtitle="Timesheet cycle, reminders, alert thresholds and company details">
         <table>

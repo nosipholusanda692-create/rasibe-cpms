@@ -2,7 +2,8 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { query } from '../lib/db.js';
 import { requireAuth, requireAdmin } from '../middleware/auth.js';
-import { assertCapability } from '../lib/errors.js';
+import { assertCapability, notFound } from '../lib/errors.js';
+import { checkSetting } from '../lib/settings-rules.js';
 
 export const settingsRouter = Router();
 
@@ -18,12 +19,15 @@ settingsRouter.get('/', requireAuth, async (req, res, next) => {
 settingsRouter.put('/:key', requireAdmin, async (req, res, next) => {
   try {
     assertCapability(req.actor!.role, 'manage_settings');
-    const key = z.string().min(1).parse(req.params.key);
-    const b = z.object({ value: z.string() }).strict().parse(req.body);
+    const key = z.string().min(1).max(80).parse(req.params.key);
+    // Bounded before the rules run, so a megabyte "value" is refused cheaply.
+    const b = z.object({ value: z.string().max(1000) }).strict().parse(req.body);
+    const value = checkSetting(key, b.value);
     const rows = await query(req.actor!,
       `UPDATE system_setting SET setting_value = $2, updated_at = now(), updated_by = $3
         WHERE setting_key = $1 RETURNING *`,
-      [key, b.value, req.actor!.userId]);
+      [key, value, req.actor!.userId]);
+    if (!rows[0]) throw notFound('That setting does not exist.');
     res.json(rows[0]);
   } catch (e) { next(e); }
 });

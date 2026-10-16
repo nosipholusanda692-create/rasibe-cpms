@@ -9,12 +9,15 @@
  * Run with:  npm test
  */
 import { createApp } from '../index.js';
-import { anonQuery, closePool, withActor, type Actor } from '../lib/db.js';
+import { anonQuery, closePool, pool, withActor, type Actor } from '../lib/db.js';
 import { enforceAppRole, readRoleFacts, roleProblems } from '../lib/db-role.js';
+import { roundMoney } from '../lib/money.js';
+import { installProcessGuards, makeShutdown } from '../lib/resilience.js';
+import { EventEmitter } from 'node:events';
 import { TLS_CIPHERS } from '../lib/https.js';
 import { bankAccountRef, isValidSaIdNumber, saIdNumber } from '../lib/identity.js';
 import { logServerError } from '../lib/logging.js';
-import { translateDbError } from '../lib/errors.js';
+import { translateDbError, transientFault } from '../lib/errors.js';
 import { csvCell, csvDocument } from '../lib/csv.js';
 import {
   hashPassword, isArgon2, isPeppered, needsRehash, PASSWORD_OPTIONS, PEPPER_MARK, verifyPassword,
@@ -498,6 +501,14 @@ async function main() {
     const invId = prep.body.invoice.invoice_id;
     check('a draft invoice carries no number yet (BR-010)',
       prep.body.invoice.invoice_number === null, prep.body.invoice.invoice_number);
+
+    const toCents = (n: unknown) => Math.round(Number(n) * 100);
+    check('the invoice adds up to the cent: subtotal plus VAT is the total',
+      toCents(prep.body.invoice.subtotal) + toCents(prep.body.invoice.vat_amount)
+        === toCents(prep.body.invoice.total), prep.body.invoice);
+    check('and the subtotal is the sum of its lines',
+      (prep.body.lines as any[]).reduce((s, l) => s + toCents(l.line_total), 0)
+        === toCents(prep.body.invoice.subtotal), prep.body.lines?.length);
 
     const issueBeforeApprove = await admin.post(`/invoices/${invId}/issue`);
     check('an invoice cannot be issued before approval (BR-010)',
@@ -1678,6 +1689,213 @@ async function main() {
     let goodInProduction = true;
     try { await enforceAppRole(undefined, 'production'); } catch { goodInProduction = false; }
     check('in production the real login starts normally', goodInProduction);
+
+    // ------------------------------------------------------------------
+    section('Money rounding (NFR-REL-001)');
+
+    check('1.005 rounds to 1.01, where toFixed gives 1.00',
+      roundMoney(1.005) === 1.01 && (1.005).toFixed(2) === '1.00');
+    check('0.1 + 0.2 is 0.30', roundMoney(0.1 + 0.2) === 0.3);
+    check('2.675 rounds to 2.68', roundMoney(2.675) === 2.68);
+    check('a larger amount rounds the same way', roundMoney(1234.565) === 1234.57);
+    check('a credit rounds away from zero too', roundMoney(-1.005) === -1.01);
+    check('zero stays zero', roundMoney(0) === 0 && Object.is(roundMoney(0), 0));
+    check('less than a cent is no cents', roundMoney(0.004) === 0);
+    let running = 0;
+    for (let i = 0; i < 1000; i++) running = roundMoney(running + 0.1);
+    check('a thousand lines of ten cents add up to exactly one hundred rand', running === 100, running);
+    check('NaN is refused, not stored', (() => { try { roundMoney(NaN); return false; } catch { return true; } })());
+    check('Infinity is refused', (() => { try { roundMoney(Infinity); return false; } catch { return true; } })());
+    check('an amount too large to hold exactly is refused',
+      (() => { try { roundMoney(1e15); return false; } catch { return true; } })());
+
+    // ------------------------------------------------------------------
+    section('Settings are checked when they are saved (NFR-REL-001)');
+
+    // vat_rate is turned into a number by invoice preparation and
+    // max_hours_per_day is cast to numeric by the timesheet trigger. A value
+    // that is not a number would be saved without complaint and then break
+    // someone else's request until corrected.
+    const settingsBefore = await admin.get('/settings');
+    const original = (key: string): string =>
+      settingsBefore.body.items.find((s: any) => s.setting_key === key)?.setting_value;
+    const putSetting = (key: string, value: unknown) =>
+      admin.put(`/settings/${encodeURIComponent(key)}`, { value });
+    const refused = async (key: string, value: unknown) => (await putSetting(key, value)).status === 400;
+
+    const badValues: Array<[string, unknown]> = [
+      ['vat_rate', 'abc'], ['vat_rate', '-5'], ['vat_rate', '101'], ['vat_rate', '1e2'],
+      ['vat_rate', ''], ['vat_rate', '5,5'], ['vat_rate', '1.234'], ['vat_rate', 'NaN'],
+      ['max_hours_per_day', '0'], ['max_hours_per_day', '25'], ['max_hours_per_day', 'abc'],
+      ['max_hours_per_day', '-1'], ['vat_registered', 'maybe'],
+      ['placement_alert_days', '60,,14'], ['placement_alert_days', '0,30'], ['placement_alert_days', '30,30'],
+      ['week_starts_on', 'FUNDAY'], ['company_name', ''], ['company_name', 'x'.repeat(201)],
+      ['company_name', 'two\nlines'], ['invoice_prefix', 'INV=1'], ['vat_rate', 15],
+      ['vat_rate', 'x'.repeat(5000)],
+    ];
+    const accepted: string[] = [];
+    for (const [key, value] of badValues) {
+      if (!(await refused(key, value))) accepted.push(`${key}=${String(value).slice(0, 12)}`);
+    }
+    check('every bad setting value is refused with a 400', accepted.length === 0, accepted);
+
+    const afterBad = await admin.get('/settings');
+    check('a refused value leaves the stored setting as it was',
+      afterBad.body.items.every((s: any) => s.setting_value === original(s.setting_key)));
+
+    const unknownKey = await putSetting('no_such_setting', '1');
+    check('an unknown setting is a 404, not an empty success',
+      unknownKey.status === 404 && unknownKey.body?.error === 'not_found', unknownKey.status);
+    check('a key that is an object property name is a 404 too',
+      (await putSetting('constructor', '1')).status === 404 && (await putSetting('__proto__', '1')).status === 404);
+
+    const trimmedRate = await putSetting('vat_rate', ' 15 ');
+    check('a valid rate is saved, trimmed', trimmedRate.status === 200 && trimmedRate.body.setting_value === '15', trimmedRate.body);
+    const decimalHours = await putSetting('max_hours_per_day', '12.5');
+    check('a decimal hour limit is accepted', decimalHours.status === 200 && decimalHours.body.setting_value === '12.5');
+    const flag = await putSetting('vat_registered', 'TRUE');
+    check('the VAT flag is stored as lower case true', flag.status === 200 && flag.body.setting_value === 'true', flag.body);
+    check('a day list is tidied',
+      (await putSetting('placement_alert_days', '60, 30 ,14')).body.setting_value === '60,30,14');
+
+    for (const key of ['vat_rate', 'max_hours_per_day', 'vat_registered', 'placement_alert_days']) {
+      await putSetting(key, original(key));
+    }
+    const restored = await admin.get('/settings');
+    check('the settings the checks changed are put back',
+      restored.body.items.every((s: any) => s.setting_value === original(s.setting_key)));
+
+    // ------------------------------------------------------------------
+    section('Database faults do not end the process');
+
+    // The error handler must be present: an idle connection that the server
+    // drops is reported as an event on the pool, and an event with no listener
+    // would end this very process.
+    check('the pool has an error listener', pool.listenerCount('error') >= 1, pool.listenerCount('error'));
+
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    const loud: string[] = [];
+    const realError = console.error;
+    console.error = (...a: unknown[]) => { loud.push(a.join(' ')); };
+
+    const [heldA, heldB] = await Promise.all([pool.connect(), pool.connect()]);
+    const idlePid = (await heldA.query('SELECT pg_backend_pid() AS pid')).rows[0].pid;
+    heldA.release();
+    await heldB.query('SELECT pg_terminate_backend($1)', [idlePid]);
+    heldB.release();
+    await sleep(400);
+    check('an idle connection dropped by the server is logged, not fatal',
+      loud.some((l) => /\[error\].*POOL idle client/.test(l)), loud);
+    check('the next request still works',
+      (await anonQuery<any>('SELECT 1 AS ok'))[0].ok === 1);
+
+    // The same, while a request is holding the connection between two queries.
+    loud.length = 0;
+    let heldFault = '';
+    let heldError: unknown;
+    try {
+      await withActor(null, async (c) => {
+        const pid = (await c.query('SELECT pg_backend_pid() AS pid')).rows[0].pid;
+        await anonQuery('SELECT pg_terminate_backend($1)', [pid]);
+        await sleep(300);
+        await c.query('SELECT 1');
+      });
+    } catch (e: any) { heldFault = e.message; heldError = e; }
+    await sleep(200);
+    console.error = realError;
+    check('a connection lost while a request holds it fails that request only', heldFault !== '', heldFault);
+    check('and is logged on one line', loud.some((l) => /\[error\].*POOL client in use/.test(l)), loud);
+    check('the failed request is answered as 503, not 500, by the error mapping',
+      transientFault(heldError)?.status === 503, heldFault);
+    check('the dead connection was discarded: the next request works',
+      (await anonQuery<any>('SELECT 1 AS ok'))[0].ok === 1);
+
+    // A statement that runs too long is cancelled by the database itself.
+    const limit = await withActor(null, async (c) =>
+      (await c.query(`SELECT current_setting('statement_timeout') AS t`)).rows[0].t);
+    check('every request runs with a statement time limit', limit === '30s', limit);
+    let slowCode = '';
+    try {
+      await withActor(null, async (c) => {
+        await c.query(`SELECT set_config('statement_timeout', '200', true)`);
+        await c.query('SELECT pg_sleep(3)');
+      });
+    } catch (e: any) { slowCode = e.code; }
+    check('a statement past the limit is cancelled', slowCode === '57014', slowCode);
+    check('the cancelled request is answered as 503', transientFault({ code: slowCode, message: 'x' })?.status === 503);
+    check('the limit was local to that request: the next one is back to 30s',
+      (await withActor(null, async (c) =>
+        (await c.query(`SELECT current_setting('statement_timeout') AS t`)).rows[0].t)) === '30s');
+
+    // Which faults count as "try again", and which do not.
+    check('connection refused is a 503', transientFault({ code: 'ECONNREFUSED', message: 'connect ECONNREFUSED' })?.status === 503);
+    check('a server shutting down is a 503', transientFault({ code: '57P01', message: 'terminating connection' })?.status === 503);
+    check('a connection-class SQLSTATE is a 503', transientFault({ code: '08006', message: 'connection failure' })?.status === 503);
+    check('too many connections is a 503', transientFault({ code: '53300', message: 'too many clients' })?.status === 503);
+    check('the driver\'s connect timeout is a 503',
+      transientFault(new Error('timeout exceeded when trying to connect'))?.status === 503);
+    check('the driver\'s query timeout is a 503', transientFault(new Error('Query read timeout'))?.status === 503);
+    check('the refusal says to try again', /try again/i.test(transientFault({ code: '57014' })?.message ?? ''));
+    check('a unique violation is not treated as transient', transientFault({ code: '23505', message: 'duplicate key' }) === null);
+    check('an ordinary error is not treated as transient', transientFault(new Error('x is not a function')) === null);
+    check('a null error is not treated as transient', transientFault(null) === null);
+
+    // ------------------------------------------------------------------
+    section('Stray errors and shutdown');
+
+    const fakeProcess = new EventEmitter();
+    const stopped: Array<[string, number | undefined]> = [];
+    installProcessGuards(async (reason, code) => { stopped.push([reason, code]); }, fakeProcess);
+    const noise: string[] = [];
+    console.error = (...a: unknown[]) => { noise.push(a.join(' ')); };
+    // A development log adds a stack trace after the record; count records.
+    const records = () => noise.filter((l) => l.startsWith('[error]'));
+    fakeProcess.emit('unhandledRejection', new Error('nobody awaited this'));
+    check('an unhandled rejection is logged on one line and the process carries on',
+      records().length === 1 && /PROCESS unhandledRejection/.test(records()[0]) && stopped.length === 0,
+      { records: records(), stopped });
+    fakeProcess.emit('uncaughtException', new Error('thrown outside a request'));
+    console.error = realError;
+    check('an uncaught exception is logged and starts a shutdown with a failure code',
+      records().length === 2 && /PROCESS uncaughtException/.test(records()[1]) && stopped.length === 1 && stopped[0][1] === 1,
+      { records: records().length, stopped });
+    fakeProcess.emit('SIGTERM');
+    fakeProcess.emit('SIGINT');
+    check('SIGTERM and SIGINT start a clean shutdown', stopped.length === 3 && stopped[1][1] === 0 && stopped[2][1] === 0, stopped);
+
+    const calls: string[] = [];
+    const quiet = () => undefined;
+    const tidy = makeShutdown({
+      server: { close: (cb) => { calls.push('server closed'); cb(); }, closeIdleConnections: () => { calls.push('idle dropped'); } },
+      closePool: async () => { calls.push('pool closed'); },
+      exit: (code) => { calls.push(`exit ${code}`); },
+      log: quiet,
+    });
+    await tidy('test', 0);
+    await tidy('again', 0);
+    check('shutdown stops the server, drops idle sockets, closes the pool, then exits',
+      calls.join(', ') === 'server closed, idle dropped, pool closed, exit 0', calls);
+    check('a second signal does not run it twice', calls.filter((c) => c.startsWith('exit')).length === 1, calls);
+
+    const afterPoolFault: string[] = [];
+    await makeShutdown({
+      server: { close: (cb) => cb() },
+      closePool: async () => { throw new Error('pool already broken'); },
+      exit: (code) => { afterPoolFault.push(`exit ${code}`); },
+      log: quiet,
+    })('pool fault', 1);
+    check('a pool that will not close does not stop the exit', afterPoolFault.join() === 'exit 1', afterPoolFault);
+
+    const hung: string[] = [];
+    void makeShutdown({
+      server: { close: () => { /* a request that never finishes keeps the server open */ } },
+      closePool: async () => undefined,
+      exit: (code) => { hung.push(`exit ${code}`); },
+      timeoutMs: 80,
+      log: quiet,
+    })('hung', 0);
+    await sleep(250);
+    check('a request that never finishes cannot hold the exit hostage', hung.join() === 'exit 1', hung);
   } finally {
     server.close();
     await closePool();
