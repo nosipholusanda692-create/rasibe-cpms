@@ -7,6 +7,7 @@ import {
 } from './lib';
 import { ErrorBoundary } from './ErrorBoundary';
 
+import NotificationBell from './Notifications';
 import Dashboard from './pages/Dashboard';
 import Consultants from './pages/Consultants';
 import ConsultantProfile from './pages/ConsultantProfile';
@@ -302,6 +303,8 @@ function Shell({ children }: { children: React.ReactNode }) {
         })}
       </div>
     </div>
+    <div className="topbar-spacer" />
+    <NotificationBell />
   </header>
   <main className="content">
     {notice && (

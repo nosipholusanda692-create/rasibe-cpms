@@ -23,6 +23,40 @@ notificationsRouter.get('/', requireAuth, async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+/**
+ * The unread count for the bell (FR-NOT-005).
+ *
+ * Polled by the web client, so it is deliberately one cheap count rather than
+ * the list itself. The list is fetched only when the panel is opened.
+ */
+notificationsRouter.get('/unread-count', requireAuth, async (req, res, next) => {
+  try {
+    const rows = await query<{ n: number }>(
+      req.actor!,
+      `SELECT count(*)::int AS n FROM notification
+        WHERE recipient_user_id = $1 AND read_at IS NULL`,
+      [req.actor!.userId],
+    );
+    res.json({ unread: rows[0]?.n ?? 0 });
+  } catch (e) { next(e); }
+});
+
+/** Marks everything read at once, for the person who has read them elsewhere. */
+notificationsRouter.post('/read-all', requireAuth, async (req, res, next) => {
+  try {
+    const rows = await query<{ n: number }>(
+      req.actor!,
+      `WITH updated AS (
+         UPDATE notification SET read_at = now()
+          WHERE recipient_user_id = $1 AND read_at IS NULL
+        RETURNING 1)
+       SELECT count(*)::int AS n FROM updated`,
+      [req.actor!.userId],
+    );
+    res.json({ marked: rows[0]?.n ?? 0 });
+  } catch (e) { next(e); }
+});
+
 notificationsRouter.post('/:id/read', requireAuth, async (req, res, next) => {
   try {
     const id = z.string().uuid().parse(req.params.id);

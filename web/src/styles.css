@@ -347,3 +347,54 @@ textarea[aria-invalid="true"]:focus {
 /* A count that turns amber as it approaches the limit */
 .char-count { font-size: 12px; color: var(--ink-faint); text-align: right; margin-top: 4px; }
 .char-count.near { color: var(--amber); }
+
+/* ---------------------------------------------------------------- bell */
+.bell {
+  position: relative;
+  width: 36px; height: 36px; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--surface);
+  cursor: pointer; font-size: 16px; color: var(--ink-soft);
+  display: grid; place-items: center; font-family: inherit;
+}
+.bell:hover { background: #f6f8fa; }
+.bell.has-unread { color: var(--brand); border-color: #cfe0e6; }
+.bell-count {
+  position: absolute; top: -6px; right: -6px;
+  min-width: 17px; height: 17px; padding: 0 4px;
+  border-radius: 9px; background: var(--accent); color: #fff;
+  font-size: 10.5px; font-weight: 700; line-height: 17px;
+  text-align: center; border: 2px solid var(--surface);
+}
+
+.bell-panel {
+  position: absolute; top: 46px; right: 0; width: 380px; max-width: calc(100vw - 32px);
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--radius); box-shadow: 0 10px 34px rgba(16,32,45,.16);
+  z-index: 40; overflow: hidden;
+}
+.bell-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 11px 14px; border-bottom: 1px solid var(--line-soft);
+}
+.bell-head h3 { margin: 0; font-size: 13.5px; font-weight: 600; }
+.bell-list { max-height: 420px; overflow-y: auto; }
+
+.bell-item {
+  display: block; width: 100%; text-align: left;
+  padding: 11px 14px; border: 0; border-bottom: 1px solid var(--line-soft);
+  background: var(--surface); cursor: pointer; font-family: inherit;
+}
+.bell-item:hover { background: #f8fafb; }
+.bell-item.unread { background: #f4f9fb; }
+.bell-item:last-child { border-bottom: 0; }
+.bell-subject { font-size: 13.5px; font-weight: 600; color: var(--ink); margin-bottom: 2px; }
+.bell-body {
+  font-size: 12.5px; color: var(--ink-soft); line-height: 1.45;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.bell-when { font-size: 11px; color: var(--ink-faint); margin-top: 4px; }
+.bell-dot {
+  display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--accent); margin-right: 6px; vertical-align: middle;
+}
+.bell-backdrop { position: fixed; inset: 0; z-index: 35; }
