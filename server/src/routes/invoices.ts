@@ -183,10 +183,22 @@ invoicesRouter.post('/prepare', requireAdmin, async (req, res, next) => {
 invoicesRouter.post('/:id/approve', requireAdmin, async (req, res, next) => {
   try {
     const id = z.string().uuid().parse(req.params.id);
-    const rows = await query<any>(req.actor!,
-      `UPDATE invoice SET status = 'APPROVED' WHERE invoice_id = $1 RETURNING *`, [id]);
-    if (!rows.length) throw notFound('Invoice not found');
-    res.json(project(req.actor!.role, rows[0]));
+    // FR-INV-006: an invoice may not be issued without this approval, so the
+    // approval is itself a financially significant action (NFR-SEC-011).
+    const row = await withActor(req.actor!, async (c) => {
+      const cur = await c.query(`SELECT status FROM invoice WHERE invoice_id = $1 FOR UPDATE`, [id]);
+      if (!cur.rows.length) throw notFound('Invoice not found');
+      const approved = await c.query(
+        `UPDATE invoice SET status = 'APPROVED' WHERE invoice_id = $1 RETURNING *`, [id]);
+      await audit(c, {
+        actorUserId: req.actor!.userId, action: 'INVOICE_APPROVED',
+        entityTable: 'invoice', entityId: id,
+        previous: { status: cur.rows[0].status }, next: { status: 'APPROVED' },
+        reason: 'Invoice approved for issue',
+      });
+      return approved.rows[0];
+    });
+    res.json(project(req.actor!.role, row));
   } catch (e) { next(e); }
 });
 
@@ -322,11 +334,24 @@ invoicesRouter.post('/:id/payment', requireAdmin, async (req, res, next) => {
   try {
     const id = z.string().uuid().parse(req.params.id);
     const b = z.object({ amount: z.number().min(0) }).strict().parse(req.body);
-    const rows = await query<any>(req.actor!,
-      `UPDATE invoice SET amount_paid = amount_paid + $2 WHERE invoice_id = $1 RETURNING *`,
-      [id, b.amount]);
-    if (!rows.length) throw notFound('Invoice not found');
-    res.json(project(req.actor!.role, rows[0]));
+    const row = await withActor(req.actor!, async (c) => {
+      const cur = await c.query(
+        `SELECT amount_paid, status FROM invoice WHERE invoice_id = $1 FOR UPDATE`, [id]);
+      if (!cur.rows.length) throw notFound('Invoice not found');
+      const paid = await c.query(
+        `UPDATE invoice SET amount_paid = amount_paid + $2 WHERE invoice_id = $1 RETURNING *`,
+        [id, b.amount]);
+      // Money received is as financially significant as money billed (NFR-SEC-011).
+      await audit(c, {
+        actorUserId: req.actor!.userId, action: 'PAYMENT_RECORDED',
+        entityTable: 'invoice', entityId: id,
+        previous: { amountPaid: cur.rows[0].amount_paid, status: cur.rows[0].status },
+        next: { amountPaid: paid.rows[0].amount_paid, status: paid.rows[0].status },
+        reason: `Payment of ${b.amount} recorded`,
+      });
+      return paid.rows[0];
+    });
+    res.json(project(req.actor!.role, row));
   } catch (e) { next(e); }
 });
 
