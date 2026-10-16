@@ -50,6 +50,28 @@ traffic.
 
 ---
 
+## What the system does today
+
+`docs/SECURITY-CONTROLS.md` has one row for every security, privacy and
+reliability requirement, with its status and how it is checked.
+
+| Area | What works | Main interface |
+| --- | --- | --- |
+| Sign-in and accounts | Invitation and reset links instead of passwords being shared, lockout after five failures, a 30-minute idle timeout, optional two-factor (authenticator app and recovery codes), suspension and role change | Web and mobile |
+| Consultant pool | Search, add, amend, record consent to disclosure, deactivate with a recorded reason, skills with proficiency | Web |
+| Skills taxonomy | Add, rename, recategorise, retire and restore | Web |
+| Clients and role requests | Client companies and contacts, requests raised and tracked, matching consultants, submissions and their outcomes | Web |
+| Placements | Created with fixed rates, rate approval, rate changes returned for approval, **extended with the original end date kept**, ended early with a reason | Web (extend: server only for now) |
+| Timesheets | Weekly capture on the phone, offline with safe resubmission, approval or rejection by the client, administrator override | Mobile and web |
+| Invoicing | Drafted only from approved hours, approved, issued with a number, credit notes, payments, spreadsheet export | Web |
+| Reporting | Margin, utilisation, outstanding timesheets, ageing, placements ending, audit log | Web |
+| Notifications | Written in the same transaction as the change, sent afterwards by email with retries | Mobile (list), email |
+| Privacy | Identity, banking and vetting values encrypted at rest; **unplaced candidates anonymised after the retention period, and anyone anonymised on request**, with the financial record kept | Server only for now |
+| Security | Rate confidentiality enforced in the database, row-level security, CSRF protection, input validation, append-only audit, backup and restore that is tested end to end (not yet scheduled) | All |
+| Hosting | One Azure App Service serving the API and both clients over HTTPS, against Neon PostgreSQL | |
+
+---
+
 ## What is in this repository
 
 ```
@@ -69,10 +91,10 @@ rasibe/
 │       ├── lib/            database access, errors, field projection, encryption,
 │       │                   CSRF tokens, paging, TLS, redacted logging
 │       ├── middleware/     session authentication and role guards
-│       ├── routes/         ten route modules
+│       ├── routes/         eleven route modules
 │       ├── services/       notification queue, email dispatch, audit log
 │       ├── scripts/        encryption backfill, backup and restore, mail tools
-│       └── test/           ten behavioural suites
+│       └── test/           twelve suites, each against a real database
 ├── web/                    Client for the administrator, recruiter and client manager
 ├── mobile/                 Installable progressive web application
 ├── docs/                   One document per control, and what each does not cover
@@ -214,8 +236,10 @@ cd server
 npm test                        # 323 behavioural assertions
 npm run test:2fa                # 78 — two-factor authentication
 npm run test:accounts           # 47 — invitations, password reset, suspension
+npm run test:catalogue          # 49 — consultant edit and deactivation, skills, termination
+npm run test:placements         # 55 — extending a placement, keeping the original end date
+npm run test:retention          # 89 — retention of unplaced candidates, anonymisation
 npx tsx src/test/paging.ts      # 36 — page boundaries and totals under RLS
-npx tsx src/test/catalogue.ts   # 35 — consultant edit, skills, termination
 npx tsx src/test/validation.ts  # 26 — the server refuses what the forms refuse
 npm run test:backup             # 23 — back up, restore, verify
 npx tsx src/test/e2e.ts         # 19 — the screens the web client loads
@@ -240,7 +264,9 @@ trigger that stopped holding fails the suite rather than passing unnoticed.
 **The suites write data and do not roll back.** Rebuild the database before each
 run. Running `npm test` twice without rebuilding produces failures that look real
 but are not: the second run finds a week it already carried through submit,
-approve and invoice.
+approve and invoice. Run them in the order above: the catalogue suite ends a
+seeded placement, so `npm test` must come before it. The placements and retention
+suites build their own consultants and can be repeated.
 
 `db/tests.sql` needs `PGOPTIONS=-c rasibe.tests_strict=on`. Without it a failed
 check is only a `NOTICE` and `psql` still exits 0, which is a false pass.
@@ -259,6 +285,44 @@ Worth stating, because it is the argument for having them:
 - `PATCH /consultants/:id` accepted a pay-rate change from a recruiter, which the
   requirements do not allow. The edit screen hid the fields; the server did not
   enforce it.
+
+---
+
+## Security
+
+Security is built in layers, so that no single mistake in one of them exposes
+anything. The central rule, that a consultant never sees a bill rate and a client
+manager never sees a pay rate, is enforced in the database itself, not only in the
+API. `docs/SECURITY-CONTROLS.md` takes every security, privacy and reliability
+requirement in the specification and records, for each one, what meets it, how it is
+checked, and where it falls short.
+
+| Concern | What is done | Detail |
+| --- | --- | --- |
+| **Who can do what** | Three independent layers: a role check on every route, row-level security in PostgreSQL, and removal of restricted fields before a response is written. The API connects as a role that is not a superuser, owns no tables and cannot bypass the policies; in production it refuses to start if its login could | `docs/ROLE-PASS-2026-10-14.md` |
+| **Rate confidentiality** | Bill rates and margin never reach a consultant; pay rates and margin never reach a client manager. The values are absent from the response, so they cannot be recovered from the browser | [Rate confidentiality](#rate-confidentiality) |
+| **Passwords** | Hashed with Argon2id and a secret pepper, known-breached passwords refused. Nobody is given a password: an administrator sends an invitation or reset link that is valid for a limited time, used once, and stored only as a hash | `docs/PASSWORDS.md`, [Accounts](#accounts) |
+| **Sign-in** | Five wrong passwords lock the account for 15 minutes, and sign-in attempts are throttled per address as well. Response timing is equalised so the form does not reveal which emails exist | `docs/LOGIN.md`, `docs/THROTTLE.md` |
+| **Two-factor** | Optional for every user: an authenticator app plus single-use recovery codes. An administrator can reset it for someone who has lost their phone | `docs/TWO-FACTOR.md` |
+| **Sessions** | A random identifier in an `HttpOnly`, `Secure` cookie, with the session held server-side. A new session is issued at sign-in, signing out revokes it immediately, an idle session ends after 30 minutes and any session after 8 hours. Suspending an account ends its sessions at once | `docs/SESSIONS.md` |
+| **Encryption at rest** | Identity numbers, banking details and vetting results are encrypted with AES-256-GCM before they reach the database, which never holds the key. Uniqueness of an identity number is kept with a keyed fingerprint, since ciphertext cannot be compared | `docs/ENCRYPTION.md` |
+| **Encryption in transit** | HTTPS with HSTS, a `Secure` cookie, and a verified TLS connection from the API to the database | `docs/TLS.md` |
+| **Forged requests (CSRF)** | `SameSite` cookie, a single permitted origin, and a token tied to the session that every write must send back | `docs/CSRF.md` |
+| **Input** | Every query uses placeholders, never string-built SQL. Request bodies are checked against a schema that rejects unknown fields, query strings against an allow-list, and every identifier as a UUID. An identity number must be a real one, with a valid date of birth and check digit, before it is encrypted. The forms' checks are only a convenience: the server refuses the same requests without them | `docs/VALIDATION.md`, `docs/IDENTITY.md` |
+| **Output** | React escapes everything it renders, a Content-Security-Policy limits where scripts may load from, and spreadsheet exports neutralise formula injection | `docs/HEADERS.md` |
+| **Business rules in the database** | Overlapping placements, timesheets without an active placement, invoices from unapproved hours, edits to an issued invoice and edits to a submitted week are all refused by constraints and triggers, even against direct SQL | [How the important rules are enforced](#how-the-important-rules-are-enforced) |
+| **Audit** | An append-only record of the financially significant actions, each with who, when, what changed and why. The application's database login cannot alter or delete it | `docs/SECURITY-CONTROLS.md` |
+| **Privacy** | Consent is recorded before a consultant is disclosed to a client, clients see only a minimum profile, unplaced candidates are anonymised after a retention period, and anyone can be anonymised on request | [Retention and anonymisation](#retention-and-anonymisation) |
+| **Errors and logs** | A fault returns a short message and a reference, never a stack trace or a database message. Logs hold no personal data, credentials or session tokens | `docs/RESILIENCE.md` |
+| **Backup and recovery** | A backup records checksums, row counts and a fingerprint of each encryption key. A restore refuses an existing target, verifies the counts, decrypts every protected value and recomputes every fingerprint, so a restore that cannot be read is detected | `docs/BACKUP.md` |
+| **Secrets and keys** | The three keys that protect data and passwords come from the environment and never from the repository. In production the server will not start without them | [Configuration](#configuration) |
+| **Automated checks** | Every pull request runs the server suites, a backup drill, a secret scan, a dependency audit and CodeQL | [Continuous integration](#continuous-integration) |
+
+Two things are worth knowing when reading this. First, the controls above are
+checked by automated suites that run against a real database, so a control that
+stops holding fails the build instead of passing unnoticed. Second, the web and
+mobile screens have no automated tests; they were checked by hand in a browser, in
+a four-role pass recorded in `docs/ROLE-PASS-2026-10-14.md`.
 
 ---
 
@@ -374,6 +438,29 @@ the audit log. The response carries `items`, `total`, `page`, `pageSize`,
 manager is told how many of their own records exist rather than how many the
 system holds. Counting without that would leak the size of data they cannot read.
 
+### Retention and anonymisation
+
+An unplaced candidate is kept only for a set time. The period is the setting
+`candidate_retention_months` (12 by default), read each time, so changing it
+applies to people already in the pool. Someone who has agreed to be kept longer is
+not due until that date.
+
+"Unplaced" is strict: no placement of any kind, and no submission a client is still
+considering. Anybody who has worked for a client belongs to the financial record
+and is never touched by this rule.
+
+An administrator previews who is due, then runs it (`/api/retention`). It does not
+run on a timer, because removing personal data is not something to happen
+unattended. A consultant can also be anonymised on request.
+
+People are anonymised, not deleted, because placements and submissions refer to
+them. Name, contact details, identity number, banking, vetting, rates, certifications,
+documents and queued emails are removed, and their sign-in account is closed.
+Invoices are kept and their amounts do not change; the one place the name was
+copied to, the words on an invoice line, is rewritten. `docs/SECURITY-CONTROLS.md`
+states what this does not reach: the append-only audit log, free text typed
+elsewhere, and backups taken earlier.
+
 ---
 
 ## Email
@@ -414,10 +501,13 @@ every write carries a CSRF token. List endpoints accept `page` and `pageSize`.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| POST | `/auth/login` | Sign in |
+| POST | `/auth/login` | Sign in; with two-factor on, answers that a code is needed |
+| POST | `/auth/login/verify` | Complete sign-in with an authenticator or recovery code |
 | POST | `/auth/logout` | Sign out and revoke the session |
 | GET | `/auth/me` | Current user, role, capabilities, landing page |
 | POST | `/auth/change-password` | Change password, revoking other sessions |
+| POST | `/auth/2fa/setup`, `/auth/2fa/enable`, `/auth/2fa/disable` | Enrol, confirm and turn off two-factor |
+| POST | `/auth/2fa/reset/:userId` | Administrator clears somebody's two-factor |
 | GET/POST | `/auth/token/:purpose` | Read or redeem an invitation or reset link |
 | POST | `/auth/forgot-password` | Request a reset link |
 | GET/POST | `/users` | Accounts: list, create and invite |
@@ -441,6 +531,7 @@ every write carries a CSRF token. List endpoints accept `page` and `pageSize`.
 | GET/POST | `/placements` | Placements |
 | POST | `/placements/:id/approve-rates` | Approve the rates and activate |
 | PATCH | `/placements/:id/rates` | Change rates; returns for approval |
+| POST | `/placements/:id/extend` | Extend a live placement to a later date; the original end date is kept and each extension audited (administrator) |
 | POST | `/placements/:id/terminate` | End early, with a reason |
 | GET | `/timesheets` | Timesheets, filtered |
 | GET | `/timesheets/my/current` | The consultant's current week |
@@ -453,11 +544,16 @@ every write carries a CSRF token. List endpoints accept `page` and `pageSize`.
 | POST | `/invoices/:id/approve` | Approve a draft |
 | POST | `/invoices/:id/issue` | Issue, allocating the number |
 | POST | `/invoices/:id/credit-note` | Credit an issued invoice |
+| POST | `/invoices/:id/payment` | Record a payment against an issued invoice |
 | POST | `/invoices/:id/export` | Spreadsheet export for the bookkeeper |
 | GET | `/dashboard` | Dashboard figures for the current role |
 | GET | `/reports/*` | Margin, utilisation, outstanding, ageing, audit |
 | GET | `/notifications` | The current user's notifications |
 | GET/PUT | `/settings` | System configuration |
+| GET | `/retention` | Unplaced candidates past the retention period: a preview, nothing changes (administrator) |
+| POST | `/retention/run` | Anonymise everyone who is due; `{"dryRun": true}` only counts (administrator) |
+| POST | `/retention/consultants/:id/anonymise` | Anonymise one consultant on request, with a reason (administrator) |
+| POST | `/retention/consultants/:id/consent` | Record that a candidate agreed to be kept longer (recruiter or administrator) |
 
 ---
 
@@ -559,6 +655,11 @@ nobody else knows.
 invoices behind a consultant are financial records, and the proficiency recorded
 against a skill was entered by hand. Retiring removes them from matching and keeps
 the history.
+
+**A placement is extended, not replaced.** Extending moves the end date on the same
+placement and keeps the original. It does not use the renewed status, which is not a
+live one and would stop timesheets; and it cannot run into the consultant's next
+booking, because the database refuses an overlap.
 
 **Authorisation is a distinct concern**, applied as projection before serialisation
 rather than spread through the controllers. One place to get right, one place to
