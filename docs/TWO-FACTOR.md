@@ -5,9 +5,9 @@ A second factor after the password: a six-digit code from an authenticator app
 ten single-use recovery codes when the phone is not to hand.
 
 The server side is complete and tested (`npm run test:2fa`, 78 checks). The
-web client has the screens (see "Web screens" below); the mobile app does not
-yet, so a person who turns it on signs in on the web only until it does. The
-setting that makes it compulsory for administrators is off.
+web client and the mobile app both have the screens (see "Web screens" and
+"Mobile screens" below). The setting that makes it compulsory for
+administrators is off.
 
 ## How it works
 
@@ -83,8 +83,25 @@ deployed. Switched on before then, administrators would have no way to enrol.
 - **User accounts.** "Two-factor on" under the status, and a Reset 2FA button
   on other people's accounts that asks for the reason.
 
-The mobile app sends only the password step. Until it has the code step, a
-consultant or client manager who turns two-factor on cannot sign in there.
+## Mobile screens
+
+Consultants and client managers are the only roles that use the mobile app, and
+both can turn two-factor on there. The behaviour matches the web screens.
+
+- **Sign in.** The password step, then "Enter your code" for an account with
+  two-factor. The field accepts the six digits or a recovery code. A wrong code
+  can be retried; an expired challenge returns to the password step with a
+  message. "Use a different account" abandons the challenge. After a recovery
+  code, a bar warns when three or fewer remain.
+- **Sign-in security** (`/account/security`, reached from the Account tab, which
+  shows On or Off). Turn on: password, QR code with the key underneath for
+  typing it in by hand, a code from the app, then the ten recovery codes with
+  copy and download. Done stays disabled until the person ticks that they have
+  saved them. Turn off: password and a code.
+- The QR code is drawn on the phone from the `otpauth` link (`qrcode` package);
+  the key is never sent to a third party.
+- Administrators and recruiters still cannot sign in to the mobile app, so
+  `REQUIRE_ADMIN_2FA` does not affect it.
 
 ## API, for the client screens
 
