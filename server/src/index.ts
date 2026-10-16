@@ -30,6 +30,7 @@ import { settingsRouter } from './routes/settings.js';
 import { usersRouter } from './routes/users.js';
 import { retentionRouter } from './routes/retention.js';
 import { startDispatcher } from './services/dispatcher.js';
+import { startScheduler } from './services/scheduler.js';
 
 /**
  * Express accepts a hop count, a boolean, or a list of addresses.
