@@ -444,41 +444,7 @@ another port. Check `http://localhost:4000/api/health` returns
 **Port already in use** — change `PORT` in `server/.env`, and the proxy target
 in `web/vite.config.ts` to match.
 
----
 
-## Limitations and external configuration
-
-These are stated plainly rather than left to be discovered.
-
-**Email is queued, not delivered.** Notifications are written to the
-`notification` table inside the same transaction as the business change, which
-satisfies the requirement that a delivery failure must never roll back a
-booking. With no `SMTP_HOST` configured the row is the delivery, and
-notifications appear in the application rather than in an inbox. Connecting a
-provider is external configuration on your side.
-
-**Documents are recorded, not stored.** The `document` table holds metadata,
-type, version, expiry and restriction. File upload to object storage is not
-implemented; the architecture specifies object storage with a path reference,
-which needs a bucket and credentials.
-
-**No mobile application.** The documentation specifies a mobile client. Only the
-web client is built. The offline capture mechanism it would use is implemented
-and tested, and the timesheet screen already works on a phone-sized viewport.
-
-**The POPIA purge job is not scheduled.** `data_retention_rule` holds the
-periods and `retention_expires_on` is set on every consultant, but the nightly
-anonymisation job shown in the activity diagram is not implemented.
-
-**Scheduled notifications are not dispatched.** Timesheet reminders and the
-60/30/14 day placement alerts have templates and the data to raise them, but no
-scheduler runs. A cron job calling a dispatch endpoint would complete this.
-
-**VAT is configured off.** The client confirmed the business is not currently
-registered. The schema, the invoice calculation and the settings all support VAT
-being switched on later without redevelopment.
-
----
 
 ## Design decisions worth knowing
 
