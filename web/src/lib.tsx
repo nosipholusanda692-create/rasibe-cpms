@@ -22,19 +22,91 @@ function csrfHeader(): Record<string, string> {
   return match ? { 'X-CSRF-Token': decodeURIComponent(match[1]) } : {};
 }
 
+// =====================================================================
+// When the server cannot be reached, or answers with something that is not ours
+//
+// fetch() rejects with a bare "Failed to fetch" when there is no connection or
+// the server is down, and a proxy or host in front of the API answers an outage
+// with an HTML page, which JSON.parse turns into "Unexpected token <". Neither
+// means anything to the person using the screen. Both become an ApiError, so
+// every screen that already shows an ApiError's message shows these too.
+// =====================================================================
+export const UNREACHABLE = "Can't reach the server. Check your connection and try again.";
+
+async function send(url: string, init: RequestInit): Promise<Response> {
+  try {
+    return await fetch(url, init);
+  } catch {
+    throw new ApiError(0, UNREACHABLE, 'network_error');
+  }
+}
+
+/** Reads a body as text; a connection that drops part-way is also "unreachable". */
+async function readText(res: Response): Promise<string> {
+  try {
+    return await res.text();
+  } catch {
+    throw new ApiError(0, UNREACHABLE, 'network_error');
+  }
+}
+
+function parseJson(text: string): any {
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+/** The server's own message when it sent one, else words suited to the status. */
+function failureMessage(status: number, data: any): string {
+  if (typeof data?.message === 'string' && data.message) {
+    // A server fault carries a reference the support team can find in the log.
+    const ref = status >= 500 && typeof data?.errorId === 'string' ? ` (reference ${data.errorId.slice(0, 8)})` : '';
+    return `${data.message}${ref}`;
+  }
+  if (status === 413) return 'That is too large to send.';
+  // Our API always answers an error with JSON. A server error with no JSON in it
+  // came from something in front of the API (a proxy or host with nothing behind it).
+  if (status === 502 || status === 503 || status === 504 || (status >= 500 && data === null)) {
+    return 'The service is temporarily unavailable. Please try again in a moment.';
+  }
+  if (status >= 500) return 'Something went wrong on our side. Please try again.';
+  return `The request could not be completed (${status}).`;
+}
+
+/** The error code for a failure: the API's own, or one for an outage in front of it. */
+function failureCode(status: number, data: any): string | undefined {
+  if (data?.error) return data.error;
+  if (status === 502 || status === 503 || status === 504 || (status >= 500 && data === null)) return 'service_unavailable';
+  return undefined;
+}
+
+/** True when the failure says "the server is not there", not "your request was wrong". */
+export function isUnreachable(e: unknown): boolean {
+  return e instanceof ApiError && (e.status === 0 || e.code === 'service_unavailable');
+}
+
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const res = await fetch(`/api${path}`, {
+  const res = await send(`/api${path}`, {
     method,
     credentials: 'include', // the session cookie is httpOnly, so it travels here
     headers: { 'Content-Type': 'application/json', ...csrfHeader() },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
 
-  const text = await res.text();
-  const data = text ? JSON.parse(text) : null;
+  const text = await readText(res);
+  const data = parseJson(text);
+
+  // A success that is not JSON is not from this API: a proxy's page, a captive
+  // portal. Returning null would only crash the screen a moment later.
+  if (res.ok && text && data === null) {
+    throw new ApiError(res.status, 'The server sent a reply that could not be read. Please try again.', 'bad_response');
+  }
 
   if (!res.ok) {
-    const error = new ApiError(res.status, data?.message ?? 'Something went wrong', data?.error, data?.detail);
+    const error = new ApiError(res.status, failureMessage(res.status, data), failureCode(res.status, data), data?.detail);
     // A 401 outside /auth means the session is gone (idle, signed out
     // elsewhere, two-factor reset). Inside /auth it can also mean a wrong
     // password or code on a form, so only /auth/me and an explicit
@@ -52,18 +124,23 @@ const SESSION_ENDED = 'rasibe:session-ended';
 
 /** POSTs (so the CSRF header goes with it) and saves the response as a file. */
 async function download(path: string, filename: string): Promise<void> {
-  const res = await fetch(`/api${path}`, {
+  const res = await send(`/api${path}`, {
     method: 'POST',
     credentials: 'include',
     headers: csrfHeader(),
   });
   if (!res.ok) {
-    let data: any = null;
-    try { data = JSON.parse(await res.text()); } catch { /* not JSON */ }
-    throw new ApiError(res.status, data?.message ?? 'Something went wrong', data?.error, data?.detail);
+    const data = parseJson(await readText(res));
+    throw new ApiError(res.status, failureMessage(res.status, data), failureCode(res.status, data), data?.detail);
   }
 
-  const url = URL.createObjectURL(await res.blob());
+  let blob: Blob;
+  try {
+    blob = await res.blob();
+  } catch {
+    throw new ApiError(0, UNREACHABLE, 'network_error');
+  }
+  const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
   a.download = filename;
@@ -120,6 +197,9 @@ interface AuthValue {
   landing: string;
   twoFactor: TwoFactorState;
   loading: boolean;
+  /** The server could not be reached when the page opened, so sign-in state is unknown. */
+  unreachable: boolean;
+  retry: () => void;
   /** Why the last session ended without the person signing out, for the sign-in page. */
   endedReason: string | null;
   /** A one-off message to show after signing in (recovery codes running low). */
@@ -141,6 +221,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [landing, setLanding] = useState('/dashboard');
   const [twoFactor, setTwoFactor] = useState<TwoFactorState>(NO_TWO_FACTOR);
   const [loading, setLoading] = useState(true);
+  const [unreachable, setUnreachable] = useState(false);
   const [endedReason, setEndedReason] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const signedIn = useRef(false);
@@ -156,14 +237,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const load = useCallback(async () => {
     try {
       apply(await api.get<Me>('/auth/me'));
+      setUnreachable(false);
     } catch (e) {
-      // Reopening the tab after the idle limit lands here, not in the listener.
-      if (e instanceof ApiError && e.code === 'session_idle') setEndedReason(e.message);
-      apply(null);
+      // If the server cannot be reached we do not know whether this person is
+      // signed in. Saying "signed out" would send them to a sign-in form that
+      // cannot work either; say so, and offer to try again.
+      if (isUnreachable(e)) {
+        setUnreachable(true);
+      } else {
+        setUnreachable(false);
+        // Reopening the tab after the idle limit lands here, not in the listener.
+        if (e instanceof ApiError && e.code === 'session_idle') setEndedReason(e.message);
+        apply(null);
+      }
     } finally {
       setLoading(false);
     }
   }, [apply]);
+
+  const retry = useCallback(() => {
+    setLoading(true);
+    void load();
+  }, [load]);
 
   useEffect(() => {
     void load();
@@ -207,7 +302,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [apply]);
 
   const signOut = useCallback(async () => {
-    await api.post('/auth/logout');
+    try {
+      await api.post('/auth/logout');
+    } catch (e) {
+      // 401: the session was already gone, which is what signing out wanted.
+      // Anything else (no connection) means the server still holds the session,
+      // so stay signed in and let the caller say so.
+      if (!(e instanceof ApiError && e.status === 401)) throw e;
+    }
     setEndedReason(null);
     setNotice(null);
     apply(null);
@@ -218,7 +320,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <AuthContext.Provider value={{
-      user, capabilities, landing, twoFactor, loading, endedReason, notice, clearNotice,
+      user, capabilities, landing, twoFactor, loading, unreachable, retry, endedReason, notice, clearNotice,
       can, signIn, verifyCode, reload, signOut,
     }}>
       {children}

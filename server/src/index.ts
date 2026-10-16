@@ -7,13 +7,14 @@ import helmet from 'helmet';
 import hpp from 'hpp';
 
 import { loadSession, requireAdminTwoFactor } from './middleware/auth.js';
-import { AppError, translateDbError } from './lib/errors.js';
+import { AppError, translateDbError, transientFault } from './lib/errors.js';
 import { fieldErrors } from './lib/validation.js';
 import { logServerError, newErrorId } from './lib/logging.js';
 import { createHttpsServer } from './lib/https.js';
 import { csrf } from './lib/csrf.js';
-import { pool } from './lib/db.js';
+import { pool, closePool } from './lib/db.js';
 import { enforceAppRole } from './lib/db-role.js';
+import { installProcessGuards, makeShutdown } from './lib/resilience.js';
 
 import { authRouter } from './routes/auth.js';
 import { consultantsRouter } from './routes/consultants.js';
@@ -171,6 +172,8 @@ export function createApp() {
       e = new AppError(413, 'That request is too large.', 'payload_too_large');
     } else if (err?.type === 'entity.parse.failed') {
       e = new AppError(400, 'The request body is not valid JSON.', 'bad_request');
+    } else if (transientFault(err)) {
+      e = transientFault(err)!;
     } else if (err?.code && typeof err.code === 'string' && err.code.length === 5) {
       e = translateDbError(err);
     } else {
@@ -181,6 +184,7 @@ export function createApp() {
     if (e.status >= 500) {
       const errorId = newErrorId();
       logServerError(errorId, err, req.method, req.path);
+      if (e.status === 503) res.setHeader('Retry-After', '5');
       res.status(e.status).json({ error: e.code, message: e.message, detail: e.detail, errorId });
       return;
     }
@@ -201,6 +205,10 @@ if (isDirectRun) {
   const secure = createHttpsServer(app);
   const server = secure ?? http.createServer(app);
   const scheme = secure ? 'https' : 'http';
+
+  installProcessGuards(
+    makeShutdown({ server, closePool, exit: (code) => process.exit(code) }),
+  );
 
   // Before listening, so a wrong database login never serves a request.
   enforceAppRole()

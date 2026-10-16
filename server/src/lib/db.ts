@@ -1,8 +1,18 @@
 import pg from 'pg';
 import { readFileSync } from 'node:fs';
 import 'dotenv/config';
+import { logServerError, newErrorId } from './logging.js';
 
 const { Pool } = pg;
+
+/** A positive whole number of milliseconds from the environment, else the default. */
+function positiveMs(raw: string | undefined, fallback: number): number {
+  const n = Number(raw);
+  return Number.isInteger(n) && n > 0 ? n : fallback;
+}
+
+/** Longest a single statement may run, set per transaction in withActor. */
+export const STATEMENT_TIMEOUT_MS = positiveMs(process.env.STATEMENT_TIMEOUT_MS, 30_000);
 
 /**
  * NFR-SEC-001 on the second hop: the connection between this process and the
@@ -49,6 +59,24 @@ export const pool = new Pool({
   ssl: sslSetting(),
   max: 10,
   idleTimeoutMillis: 30_000,
+  // A database that does not answer must become an error, not a request that
+  // waits for ever. Connecting gives up after ten seconds; a query after the
+  // client-side limit below. query_timeout is the backstop: the usual limit is
+  // set inside each transaction (see withActor), which also cancels the query
+  // on the server, and works through a pooler where a startup parameter would not.
+  connectionTimeoutMillis: 10_000,
+  query_timeout: positiveMs(process.env.QUERY_TIMEOUT_MS, 40_000),
+  // Without keep-alive a connection a firewall has silently dropped looks open
+  // until the next query hangs on it.
+  keepAlive: true,
+});
+
+// An idle client in the pool can be dropped by the server or the network (a
+// hosted database closes idle connections, and restarts). The pool reports that
+// as an 'error' event, and an event with no listener ends the process. Log it,
+// and the pool discards the client and opens another when one is next needed.
+pool.on('error', (err) => {
+  logServerError(newErrorId(), err, 'POOL', 'idle client');
 });
 
 export type Role = 'ADMINISTRATOR' | 'RECRUITER' | 'CONSULTANT' | 'CLIENT_MANAGER';
@@ -71,8 +99,24 @@ export async function withActor<T>(
   fn: (client: pg.PoolClient) => Promise<T>,
 ): Promise<T> {
   const client = await pool.connect();
+  // Set when the connection can no longer be trusted (the ROLLBACK itself failed,
+  // as it does when the link is gone). Such a client is discarded, not returned
+  // to the pool for the next request to pick up.
+  let broken = false;
+  // While a request holds a connection the pool is not listening to it. If the
+  // link drops between two queries, the driver raises 'error' on the connection
+  // itself, and with no listener that ends the process. The next query on it
+  // then fails normally, which is how the request learns of it.
+  const onClientError = (err: Error) => {
+    broken = true;
+    logServerError(newErrorId(), err, 'POOL', 'client in use');
+  };
+  client.on('error', onClientError);
   try {
     await client.query('BEGIN');
+    // Local to this transaction, like the actor settings: a statement that runs
+    // past the limit is cancelled by the server and becomes a 503, not a hang.
+    await client.query('SELECT set_config($1, $2, true)', ['statement_timeout', String(STATEMENT_TIMEOUT_MS)]);
     if (actor) {
       await client.query('SELECT set_config($1, $2, true)', ['rasibe.actor_user_id', actor.userId]);
       await client.query('SELECT set_config($1, $2, true)', ['rasibe.actor_role', actor.role]);
@@ -84,10 +128,17 @@ export async function withActor<T>(
     await client.query('COMMIT');
     return result;
   } catch (err) {
-    await client.query('ROLLBACK');
+    // The fault that matters is the original one. A failed ROLLBACK must not
+    // replace it, and says the connection is dead.
+    try {
+      await client.query('ROLLBACK');
+    } catch {
+      broken = true;
+    }
     throw err;
   } finally {
-    client.release();
+    client.removeListener('error', onClientError);
+    client.release(broken || undefined);
   }
 }
 

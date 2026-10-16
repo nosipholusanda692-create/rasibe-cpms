@@ -5,6 +5,7 @@ import {
 import {
   AuthProvider, useAuth, useLoad, api, ApiError, Alert, Field, Loading, initials,
 } from './lib';
+import { ErrorBoundary } from './ErrorBoundary';
 
 import Dashboard from './pages/Dashboard';
 import Consultants from './pages/Consultants';
@@ -256,6 +257,16 @@ function Shell({ children }: { children: React.ReactNode }) {
   const groups = useNav();
   const nav = useNavigate();
   const loc = useLocation();
+  const [signOutError, setSignOutError] = useState<string | null>(null);
+
+  async function out() {
+    try {
+      await signOut();
+      nav('/signin');
+    } catch (e) {
+      setSignOutError(e instanceof Error ? e.message : 'Could not sign out. Please try again.');
+    }
+  }
 
   const titles: Record<string, string> = {
     '/dashboard': 'Dashboard', '/consultants': 'Consultants', '/clients': 'Clients',
@@ -299,8 +310,7 @@ function Shell({ children }: { children: React.ReactNode }) {
       <div style={{ color: '#fff', fontSize: 12.5 }}>{user?.fullName}</div>
       <small>{user?.role?.replace('_', ' ')}</small>
     </div>
-    <button className="btn btn-sm" title="Sign out"
-      onClick={async () => { await signOut(); nav('/signin'); }}>Out</button>
+    <button className="btn btn-sm" title="Sign out" onClick={out}>Out</button>
   </div>
 </aside>
 
@@ -322,17 +332,44 @@ function Shell({ children }: { children: React.ReactNode }) {
         <button className="btn btn-sm" onClick={clearNotice}>Dismiss</button>
       </Alert>
     )}
-    {children}
+    {signOutError && (
+      <Alert kind="error">
+        You are still signed in. {signOutError}{' '}
+        <button className="btn btn-sm" onClick={() => setSignOutError(null)}>Dismiss</button>
+      </Alert>
+    )}
+    {/* Keyed by the address so choosing another page clears a failed one. */}
+    <ErrorBoundary key={loc.pathname}>{children}</ErrorBoundary>
   </main>
 </div>
     </div>
   );
 }
 
+/** Shown instead of the sign-in page when the server did not answer at start-up. */
+function Unreachable() {
+  const { retry } = useAuth();
+  return (
+    <div style={{ maxWidth: 440, margin: '12vh auto', padding: 16 }}>
+      <section className="card" role="alert">
+        <div className="card-body">
+          <h2 style={{ margin: '0 0 6px', fontSize: 16 }}>Can't connect</h2>
+          <p className="muted" style={{ margin: '0 0 14px' }}>
+            The server is not answering. Check your connection and try again. If it keeps
+            happening, the service may be down for maintenance.
+          </p>
+          <button className="btn btn-primary" onClick={retry}>Try again</button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function Protected({ children }: { children: React.ReactNode }) {
-  const { user, loading, twoFactor } = useAuth();
+  const { user, loading, unreachable, twoFactor } = useAuth();
   const loc = useLocation();
   if (loading) return <Loading />;
+  if (unreachable) return <Unreachable />;
   if (!user) return <Navigate to="/signin" replace />;
   // REQUIRE_ADMIN_2FA: the API answers nothing else until this person enrols.
   if (twoFactor.required && !twoFactor.enabled && loc.pathname !== '/account/security') {
@@ -342,8 +379,9 @@ function Protected({ children }: { children: React.ReactNode }) {
 }
 
 function Landing() {
-  const { user, landing, loading } = useAuth();
+  const { user, landing, loading, unreachable } = useAuth();
   if (loading) return <Loading />;
+  if (unreachable) return <Unreachable />;
   if (!user) return <Navigate to="/signin" replace />;
   return <Navigate to={landing} replace />;
 }
