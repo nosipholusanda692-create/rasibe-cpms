@@ -147,6 +147,28 @@ function WeekCard({
 
   const [busy, setBusy] = useState(false);
 
+  /**
+   * Per-day checks, shown as the hours are typed.
+   *
+   * The ceiling comes from the placement's own standard day where there is one.
+   * These are also enforced on the server and by a check constraint; here they
+   * exist so a mistake is visible before the week is submitted.
+   */
+  const dayErrors = useMemo(() => {
+    const out: Record<string, string> = {};
+    for (const d of days) {
+      const n = Number(rows[d]?.normal || 0);
+      const o = Number(rows[d]?.overtime || 0);
+      if (rows[d]?.normal !== '' && Number.isNaN(n)) { out[d] = 'Hours must be a number'; continue; }
+      if (rows[d]?.overtime !== '' && Number.isNaN(o)) { out[d] = 'Overtime must be a number'; continue; }
+      if (n < 0 || o < 0) { out[d] = 'Hours cannot be negative'; continue; }
+      if (n + o > 16) { out[d] = 'More than 16 hours in one day'; continue; }
+      if (n + o > 24) { out[d] = 'A day has 24 hours'; }
+    }
+    return out;
+  }, [rows, days]);
+
+  const hasDayError = Object.keys(dayErrors).length > 0;
   const status = queued ? 'PENDING_SYNC' : sheet.status;
   const editable = ['DRAFT', 'PENDING_SYNC', 'REJECTED'].includes(sheet.status);
 
@@ -186,6 +208,10 @@ function WeekCard({
   }
 
   async function save(submit: boolean) {
+    if (hasDayError) {
+      onError('Correct the hours shown in red before saving.');
+      return;
+    }
     const payload = lines();
 
     if (submit && payload.length === 0) {
@@ -278,6 +304,7 @@ function WeekCard({
                     disabled={!editable || future}
                     value={rows[d]?.normal ?? ''}
                     placeholder={future ? '–' : '0'}
+                    aria-invalid={dayErrors[d] ? true : undefined}
                     onChange={(e) => set(d, 'normal', e.target.value)}
                   />
                 </div>
@@ -288,6 +315,7 @@ function WeekCard({
                     disabled={!editable || future}
                     value={rows[d]?.overtime ?? ''}
                     placeholder={future ? '–' : '0'}
+                    aria-invalid={dayErrors[d] ? true : undefined}
                     onChange={(e) => set(d, 'overtime', e.target.value)}
                   />
                 </div>
@@ -295,6 +323,14 @@ function WeekCard({
             </div>
           );
         })}
+
+        {hasDayError && (
+          <div style={{ padding: '0 14px 12px' }}>
+            {Object.entries(dayErrors).map(([d, message]) => (
+              <div className="field-error" key={d}>{dayName(d)} {dayNumber(d)}: {message}</div>
+            ))}
+          </div>
+        )}
 
         <div className="week-total">
           <span className="n">{fmtHours(total)}</span>
@@ -316,10 +352,12 @@ function WeekCard({
 
       {editable && (
         <div className="actions above-tabs">
-          <button className="btn btn-grow" disabled={busy} onClick={() => save(false)}>
+          <button className="btn btn-grow" disabled={busy || hasDayError} onClick={() => save(false)}>
             Save
           </button>
-          <button className="btn btn-primary btn-grow" disabled={busy} onClick={() => save(true)}>
+          <button className="btn btn-primary btn-grow"
+            disabled={busy || hasDayError || total <= 0}
+            onClick={() => save(true)}>
             {online ? 'Submit' : 'Save on phone'}
           </button>
         </div>

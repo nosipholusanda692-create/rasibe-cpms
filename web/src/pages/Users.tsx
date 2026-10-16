@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import {
   api, useAuth, useLoad, useFormError, Card, Status, Loading, Alert, Empty, Person,
-  Field, Modal, date, titleCase,
+  Field, Modal, ReasonModal, date, titleCase,
 } from '../lib';
 
 /**
@@ -16,21 +16,23 @@ export default function Users() {
   const [adding, setAdding] = useState(false);
   const [msg, setMsg] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
   const [link, setLink] = useState<string | null>(null);
+  const [statusTarget, setStatusTarget] = useState<{ user: any; isActive: boolean } | null>(null);
+  const [roleTarget, setRoleTarget] = useState<any | null>(null);
+  const [newRole, setNewRole] = useState('RECRUITER');
+  const [twoFactorTarget, setTwoFactorTarget] = useState<any | null>(null);
 
   const list = useLoad<any>(
     () => api.get(`/users${search ? `?search=${encodeURIComponent(search)}` : ''}`), [search]);
 
-  async function setStatus(u: any, isActive: boolean) {
-    const reason = window.prompt(
-      isActive ? 'Reason for reinstating this account:' : 'Reason for suspending this account:');
-    if (!reason || reason.trim().length < 5) return;
-    try {
-      await api.post(`/users/${u.user_id}/status`, { isActive, reason });
-      setMsg({ kind: 'success', text: `${u.full_name} ${isActive ? 'reinstated' : 'suspended'}.` });
-      list.reload();
-    } catch (e) {
-      setMsg({ kind: 'error', text: e instanceof Error ? e.message : 'Could not change the account' });
-    }
+  async function applyStatus(reason: string) {
+    const t = statusTarget!;
+    await api.post(`/users/${t.user.user_id}/status`, { isActive: t.isActive, reason });
+    setStatusTarget(null);
+    setMsg({
+      kind: 'success',
+      text: `${t.user.full_name} ${t.isActive ? 'reinstated' : 'suspended'}.`,
+    });
+    list.reload();
   }
 
   async function reinvite(u: any) {
@@ -44,19 +46,20 @@ export default function Users() {
     }
   }
 
-  async function changeRole(u: any) {
-    const role = window.prompt(
-      'New role: ADMINISTRATOR, RECRUITER, CONSULTANT or CLIENT_MANAGER', u.role);
-    if (!role) return;
-    const reason = window.prompt('Reason for the change:');
-    if (!reason || reason.trim().length < 5) return;
-    try {
-      await api.post(`/users/${u.user_id}/role`, { role: role.toUpperCase(), reason });
-      setMsg({ kind: 'success', text: `${u.full_name} is now ${titleCase(role)}.` });
-      list.reload();
-    } catch (e) {
-      setMsg({ kind: 'error', text: e instanceof Error ? e.message : 'Could not change the role' });
-    }
+  async function applyRole(reason: string) {
+    const u = roleTarget!;
+    await api.post(`/users/${u.user_id}/role`, { role: newRole, reason });
+    setRoleTarget(null);
+    setMsg({ kind: 'success', text: `${u.full_name} is now ${titleCase(newRole)}.` });
+    list.reload();
+  }
+
+  async function applyTwoFactorReset(reason: string) {
+    const u = twoFactorTarget!;
+    await api.post(`/auth/2fa/reset/${u.user_id}`, { reason });
+    setTwoFactorTarget(null);
+    setMsg({ kind: 'success', text: `Two-factor was reset for ${u.full_name}.` });
+    list.reload();
   }
 
   return (
@@ -116,6 +119,7 @@ export default function Users() {
                             {u.invite_expires_at ? 'Invited' : 'No invitation'}
                           </span>
                         ) : <span className="pill pill-green">Active</span>}
+                      {u.two_factor_enabled && <div className="person-role">Two-factor on</div>}
                     </td>
                     <td className="right">
                       <div className="btn-row" style={{ justifyContent: 'flex-end' }}>
@@ -126,9 +130,14 @@ export default function Users() {
                         )}
                         {u.user_id !== user?.userId && (
                           <>
-                            <button className="btn btn-sm" onClick={() => changeRole(u)}>Role</button>
+                            <button className="btn btn-sm"
+                              onClick={() => { setRoleTarget(u); setNewRole(u.role); }}>Role</button>
+                            {u.two_factor_enabled && (
+                              <button className="btn btn-sm"
+                                onClick={() => setTwoFactorTarget(u)}>Reset 2FA</button>
+                            )}
                             <button className={`btn btn-sm${u.is_active ? ' btn-danger' : ''}`}
-                              onClick={() => setStatus(u, !u.is_active)}>
+                              onClick={() => setStatusTarget({ user: u, isActive: !u.is_active })}>
                               {u.is_active ? 'Suspend' : 'Reinstate'}
                             </button>
                           </>
@@ -141,6 +150,49 @@ export default function Users() {
             </table>
           )}
       </Card>
+
+      {statusTarget && (
+        <ReasonModal
+          title={statusTarget.isActive ? 'Reinstate this account' : 'Suspend this account'}
+          intent={statusTarget.isActive
+            ? `${statusTarget.user.full_name} will be able to sign in again.`
+            : `${statusTarget.user.full_name} will be signed out immediately and will not be able to sign in.`}
+          confirmLabel={statusTarget.isActive ? 'Reinstate' : 'Suspend'}
+          danger={!statusTarget.isActive}
+          onClose={() => setStatusTarget(null)}
+          onConfirm={applyStatus} />
+      )}
+
+      {roleTarget && (
+        <ReasonModal
+          title={`Change role — ${roleTarget.full_name}`}
+          intent="Changing a role signs the person out, so their navigation matches their new access when they return."
+          confirmLabel="Change role"
+          extra={
+            <Field label="New role" required>
+              <select value={newRole} onChange={(e) => setNewRole(e.target.value)}>
+                <option value="ADMINISTRATOR">Administrator</option>
+                <option value="RECRUITER">Recruiter</option>
+                <option value="CONSULTANT">Consultant</option>
+                <option value="CLIENT_MANAGER">Client manager</option>
+              </select>
+            </Field>
+          }
+          onClose={() => setRoleTarget(null)}
+          onConfirm={applyRole} />
+      )}
+
+      {twoFactorTarget && (
+        <ReasonModal
+          title={`Reset two-factor — ${twoFactorTarget.full_name}`}
+          intent="They will be signed out everywhere and must set two-factor up again from scratch."
+          confirmLabel="Reset two-factor"
+          danger
+          minChars={10}
+          hint="At least 10 characters. Recorded in the audit log against your name."
+          onClose={() => setTwoFactorTarget(null)}
+          onConfirm={applyTwoFactorReset} />
+      )}
 
       {adding && (
         <CreateUser

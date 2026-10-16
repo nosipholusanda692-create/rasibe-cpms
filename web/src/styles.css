@@ -323,3 +323,27 @@ textarea { resize: vertical; min-height: 70px; }
 }
 .sync-pending { background: var(--amber-bg); color: var(--amber); }
 .sync-ok { background: var(--green-bg); color: var(--green); }
+
+/* A field the person has left in an invalid state. Colour alone is not the
+   signal: the message under the field carries the meaning (NFR-USA-006). */
+input[aria-invalid="true"],
+select[aria-invalid="true"],
+textarea[aria-invalid="true"] {
+  border-color: var(--red);
+  background: #fffafa;
+}
+input[aria-invalid="true"]:focus,
+select[aria-invalid="true"]:focus,
+textarea[aria-invalid="true"]:focus {
+  border-color: var(--red);
+  box-shadow: 0 0 0 3px rgba(185, 28, 28, .12);
+}
+
+/* Live password rules */
+.rule-list { list-style: none; padding: 0; margin: 0 0 16px; font-size: 13px; }
+.rule-list li { padding: 2px 0; color: var(--ink-faint); }
+.rule-list li.met { color: var(--green); }
+
+/* A count that turns amber as it approaches the limit */
+.char-count { font-size: 12px; color: var(--ink-faint); text-align: right; margin-top: 4px; }
+.char-count.near { color: var(--amber); }

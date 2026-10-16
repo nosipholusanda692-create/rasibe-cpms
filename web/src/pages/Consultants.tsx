@@ -4,6 +4,10 @@ import {
   api, useAuth, useLoad, useFormError, Card, Status, Loading, Alert, Empty, Person,
   Field, Modal, money, date, titleCase,
 } from '../lib';
+import {
+  useForm, required, minLength, maxLength, email as emailRule, phone,
+  number, min, max, integer,
+} from '../validation';
 
 // =====================================================================
 // Consultant search (UC-05) — also serves the skills view
@@ -179,94 +183,118 @@ export default function Consultants({ skillsView }: { skillsView?: boolean }) {
 function AddConsultant({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
   const err = useFormError();
   const [busy, setBusy] = useState(false);
-  const [form, setForm] = useState({
-    fullName: '', email: '', mobile: '', location: '',
-    seniority: 'INTERMEDIATE', headline: '', experienceYears: '',
-    availability: 'AVAILABLE', availableFrom: '', minPayRate: '',
-  });
 
-  const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }));
+  const form = useForm(
+    {
+      fullName: '', email: '', mobile: '', location: '',
+      seniority: 'INTERMEDIATE', headline: '', experienceYears: '',
+      availability: 'AVAILABLE', availableFrom: '', minPayRate: '',
+    },
+    {
+      fullName: [required('A full name'), minLength(2, 'The name'), maxLength(200, 'The name')],
+      email: [required('An email address'), emailRule],
+      mobile: [phone],
+      headline: [maxLength(300, 'The headline')],
+      experienceYears: [integer('Experience'), min(0, 'Experience'), max(60, 'Experience')],
+      // the date is only required when the availability says there will be one
+      availableFrom: [(v, f) => (f.availability === 'AVAILABLE_FROM' && !v
+        ? 'Give the date the consultant becomes available' : undefined)],
+      minPayRate: [number('The minimum rate'), min(0, 'The minimum rate')],
+    },
+  );
+
+  const f = form.values;
 
   async function save() {
-    setBusy(true);
-    err.clear();
+    if (!form.attemptSubmit()) return;
+    setBusy(true); err.clear();
     try {
       await api.post('/consultants', {
-        fullName: form.fullName,
-        email: form.email,
-        mobile: form.mobile || undefined,
-        location: form.location || undefined,
-        seniority: form.seniority,
-        headline: form.headline || undefined,
-        experienceYears: form.experienceYears ? Number(form.experienceYears) : undefined,
-        availability: form.availability,
-        availableFrom: form.availableFrom || undefined,
-        minPayRate: form.minPayRate ? Number(form.minPayRate) : undefined,
+        fullName: f.fullName,
+        email: f.email,
+        mobile: f.mobile || undefined,
+        location: f.location || undefined,
+        seniority: f.seniority,
+        headline: f.headline || undefined,
+        experienceYears: f.experienceYears ? Number(f.experienceYears) : undefined,
+        availability: f.availability,
+        availableFrom: f.availableFrom || undefined,
+        minPayRate: f.minPayRate ? Number(f.minPayRate) : undefined,
       });
       onSaved();
     } catch (e) {
       err.capture(e);
-    } finally {
-      setBusy(false);
-    }
+      form.applyServerErrors((e as any)?.detail);
+    } finally { setBusy(false); }
   }
 
   return (
     <Modal title="Add a consultant to the pool" onClose={onClose}
       footer={<>
         <button className="btn" onClick={onClose}>Cancel</button>
-        <button className="btn btn-primary" onClick={save} disabled={busy}>
+        <button className="btn btn-primary" onClick={save}
+          disabled={busy || (form.submitted && !form.isValid)}>
           {busy ? 'Saving…' : 'Add consultant'}
         </button>
       </>}>
       {err.error && <Alert kind="error">{err.error}</Alert>}
+
       <div className="form-row">
-        <Field label="Full name" required error={err.fieldError('fullName')}>
-          <input value={form.fullName} onChange={(e) => set('fullName', e.target.value)} />
+        <Field label="Full name" required error={form.errorFor('fullName')}>
+          <input {...form.fieldProps('fullName')} />
         </Field>
-        <Field label="Email address" required error={err.fieldError('email')}>
-          <input type="email" value={form.email} onChange={(e) => set('email', e.target.value)} />
+        <Field label="Email address" required error={form.errorFor('email')}>
+          <input type="email" {...form.fieldProps('email')} />
         </Field>
       </div>
+
       <div className="form-row">
-        <Field label="Mobile"><input value={form.mobile} onChange={(e) => set('mobile', e.target.value)} /></Field>
-        <Field label="Location"><input value={form.location} onChange={(e) => set('location', e.target.value)} /></Field>
+        <Field label="Mobile" error={form.errorFor('mobile')}>
+          <input {...form.fieldProps('mobile')} placeholder="+27 82 000 0000" />
+        </Field>
+        <Field label="Location">
+          <input {...form.fieldProps('location')} />
+        </Field>
       </div>
-      <Field label="Headline" hint="One line describing what they do">
-        <input value={form.headline} onChange={(e) => set('headline', e.target.value)} />
+
+      <Field label="Headline" error={form.errorFor('headline')}
+        hint="One line describing what they do">
+        <input {...form.fieldProps('headline')} />
       </Field>
+
       <div className="form-row">
         <Field label="Seniority">
-          <select value={form.seniority} onChange={(e) => set('seniority', e.target.value)}>
+          <select {...form.fieldProps('seniority')}>
             {['JUNIOR', 'INTERMEDIATE', 'SENIOR', 'LEAD', 'PRINCIPAL'].map((s) => (
               <option key={s} value={s}>{titleCase(s)}</option>
             ))}
           </select>
         </Field>
-        <Field label="Years of experience">
-          <input type="number" min={0} max={60} value={form.experienceYears}
-            onChange={(e) => set('experienceYears', e.target.value)} />
+        <Field label="Years of experience" error={form.errorFor('experienceYears')}>
+          <input type="number" min={0} max={60} {...form.fieldProps('experienceYears')} />
         </Field>
       </div>
+
       <div className="form-row">
         <Field label="Availability">
-          <select value={form.availability} onChange={(e) => set('availability', e.target.value)}>
+          <select {...form.fieldProps('availability')}>
             <option value="AVAILABLE">Available now</option>
             <option value="AVAILABLE_FROM">Available from</option>
             <option value="NOT_AVAILABLE">Not available</option>
           </select>
         </Field>
-        {form.availability === 'AVAILABLE_FROM' ? (
-          <Field label="Available from" required>
-            <input type="date" value={form.availableFrom} onChange={(e) => set('availableFrom', e.target.value)} />
+        {f.availability === 'AVAILABLE_FROM' ? (
+          <Field label="Available from" required error={form.errorFor('availableFrom')}>
+            <input type="date" {...form.fieldProps('availableFrom')} />
           </Field>
         ) : (
-          <Field label="Minimum pay rate" hint="Per hour, never shown to a client">
-            <input type="number" min={0} value={form.minPayRate}
-              onChange={(e) => set('minPayRate', e.target.value)} />
+          <Field label="Minimum pay rate" error={form.errorFor('minPayRate')}
+            hint="Per hour, never shown to a client">
+            <input type="number" min={0} step="0.01" {...form.fieldProps('minPayRate')} />
           </Field>
         )}
       </div>
+
       <Alert kind="info">
         Consent to disclose this consultant to a client is recorded separately,
         and is required before they can be submitted (BR-012).

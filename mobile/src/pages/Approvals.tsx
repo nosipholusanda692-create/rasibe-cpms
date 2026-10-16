@@ -147,16 +147,24 @@ function RejectSheet({
   timesheet, onClose, onDone,
 }: { timesheet: any; onClose: () => void; onDone: () => void }) {
   const [reason, setReason] = useState('');
+  const [touched, setTouched] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  // BR-005. Checked here so the person sees it as they type, and again on the
+  // server and as a check constraint, which are the ones that count.
+  const tooShort = reason.trim().length < 5;
+  const showError = touched && tooShort;
+
   async function send() {
+    setTouched(true);
+    if (tooShort) return;
     setBusy(true);
     setError(null);
     try {
       await api.post(`/timesheets/${timesheet.timesheet_id}/decision`, {
         decision: 'REJECT',
-        reason,
+        reason: reason.trim(),
       });
       onDone();
     } catch (e) {
@@ -191,13 +199,23 @@ function RejectSheet({
             <label>Reason</label>
             <textarea
               value={reason}
+              aria-invalid={showError ? true : undefined}
               onChange={(e) => setReason(e.target.value)}
+              onBlur={() => setTouched(true)}
               placeholder="Tuesday shows 10 hours but you were on site for 8."
               autoFocus
             />
-            <div className="field-hint">
-              At least five characters. Without a reason the consultant cannot correct the week.
-            </div>
+            {showError ? (
+              <div className="field-error">
+                Give a reason of at least five characters, so the consultant knows what to correct
+              </div>
+            ) : (
+              <div className="field-hint">
+                {reason.trim().length > 0
+                  ? `${reason.trim().length} characters`
+                  : 'Without a reason the consultant cannot correct the week.'}
+              </div>
+            )}
           </div>
         </div>
       </section>
@@ -206,7 +224,7 @@ function RejectSheet({
         <button className="btn btn-grow" onClick={onClose}>Cancel</button>
         <button
           className="btn btn-danger btn-grow"
-          disabled={busy || reason.trim().length < 5}
+          disabled={busy || (touched && tooShort)}
           onClick={send}
         >
           {busy ? 'Sending…' : 'Return with reason'}
