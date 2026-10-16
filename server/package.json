@@ -12,7 +12,6 @@
     "test:accounts": "tsx src/test/accounts.ts",
     "test:2fa": "tsx src/test/two-factor.ts",
     "test:catalogue": "tsx src/test/catalogue.ts",
-    "test:placements": "tsx src/test/placements.ts",
     "test:clients": "tsx src/test/clients.ts",
     "test:proxy": "tsx src/test/proxy.ts",
     "encrypt-existing": "tsx src/scripts/encrypt-existing.ts",
@@ -21,7 +20,8 @@
     "backup": "tsx src/scripts/backup.ts",
     "restore": "tsx src/scripts/restore.ts",
     "notify:send": "tsx src/scripts/send-notifications.ts",
-    "mail:verify": "tsx src/scripts/verify-mail.ts"
+    "mail:verify": "tsx src/scripts/verify-mail.ts",
+    "notify:raise": "tsx src/scripts/raise-notifications.ts"
   },
   "dependencies": {
     "@node-rs/argon2": "^2.2.2",
