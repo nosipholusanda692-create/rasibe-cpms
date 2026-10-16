@@ -4,7 +4,7 @@ import { query, withActor } from '../lib/db.js';
 import { badRequest, notFound, conflict, forbidden, project, assertCapability } from '../lib/errors.js';
 import { requireAuth, requireInternal, requireAdmin } from '../middleware/auth.js';
 import { readPage, paged, limitOffset, countQuery } from '../lib/paging.js';
-import { PLACEMENT_STATUS, REQUEST_STATUS, enumList, queryInt, searchText, fieldErrors, optionalReason } from '../lib/validation.js';
+import { PLACEMENT_STATUS, REQUEST_STATUS, isoDate, enumList, queryInt, searchText, fieldErrors, optionalReason } from '../lib/validation.js';
 import { audit, queueNotification } from '../services/notify.js';
 
 export const requestsRouter = Router();
@@ -394,6 +394,7 @@ placementsRouter.get('/', requireAuth, async (req, res, next) => {
       req.actor!,
       `SELECT p.placement_id, p.reference, p.job_title, p.engagement_type, p.work_mode,
               p.start_date, p.end_date, p.status, p.rate_unit,
+              p.original_end_date, p.extension_count,
               p.bill_rate, p.pay_rate, p.margin_amount,
               p.consultant_id, con.full_name AS consultant_name,
               p.client_id, cl.legal_name AS client_name,
@@ -508,6 +509,87 @@ placementsRouter.post('/:id/approve-rates', requireAdmin, async (req, res, next)
         entityTable: 'placement', entityId: id,
         next: { billRate: cur.rows[0].bill_rate, payRate: cur.rows[0].pay_rate },
         reason: body.reason ?? 'Rates approved',
+      });
+      return r.rows[0];
+    });
+    res.json(project(req.actor!.role, out));
+  } catch (e) { next(e); }
+});
+
+/**
+ * FR-PLC-006: extend a live placement to a later end date, keeping the
+ * original. It is the same placement, so the timesheets, the rates and the
+ * consultant's availability carry on unchanged; the RENEWED status is not used
+ * because it is not a live status and would stop timesheets (BR-002).
+ *
+ * Extending cannot collide with the consultant's next booking: the database's
+ * no-overlap rule (BR-001) refuses it and the error handler reports it as a 409.
+ * An "ending soon" placement goes back to active once the new date is beyond the
+ * longest alert threshold (placement_alert_days). The audit entry carries the
+ * previous and the new date, who and why (NFR-SEC-011).
+ */
+const MAX_EXTENSION_YEARS = 5;
+
+placementsRouter.post('/:id/extend', requireAdmin, async (req, res, next) => {
+  try {
+    const id = z.string().uuid().parse(req.params.id);
+    const b = z.object({
+      newEndDate: isoDate,
+      reason: z.string().trim().min(5, 'Give a reason of at least five characters').max(500),
+    }).strict().parse(req.body ?? {});
+
+    const out = await withActor(req.actor!, async (c) => {
+      const cur = await c.query(
+        `SELECT status, to_char(end_date, 'YYYY-MM-DD') AS end_date,
+                to_char(original_end_date, 'YYYY-MM-DD') AS original_end_date,
+                ($2::date > end_date) AS is_later,
+                ($2::date > end_date + ($3::int || ' years')::interval) AS too_far
+           FROM placement WHERE placement_id = $1 FOR UPDATE`,
+        [id, b.newEndDate, MAX_EXTENSION_YEARS]);
+      if (!cur.rows.length) throw notFound('Placement not found');
+      const p = cur.rows[0];
+
+      if (!['ACTIVE', 'ENDING_SOON'].includes(p.status)) {
+        throw conflict('Only a live placement can be extended. This one is ' +
+          String(p.status).toLowerCase().replace(/_/g, ' ') + '.');
+      }
+      if (!p.is_later) {
+        throw badRequest('Check the details you entered', {
+          newEndDate: [`The new end date must be after the current end date (${p.end_date}).`],
+        });
+      }
+      if (p.too_far) {
+        throw badRequest('Check the details you entered', {
+          newEndDate: [`The new end date is more than ${MAX_EXTENSION_YEARS} years past the current one. Check the year.`],
+        });
+      }
+
+      const r = await c.query(
+        `UPDATE placement
+            SET end_date = $2::date,
+                original_end_date = COALESCE(original_end_date, end_date),
+                extension_count = extension_count + 1,
+                status = CASE WHEN status = 'ENDING_SOON'
+                               AND $2::date > current_date + COALESCE(
+                                     (SELECT max(d::int) FROM system_setting s,
+                                             unnest(string_to_array(s.setting_value, ',')) AS d
+                                       WHERE s.setting_key = 'placement_alert_days'), 0)
+                              THEN 'ACTIVE'::placement_status_enum
+                              ELSE status END
+          WHERE placement_id = $1
+          RETURNING *`,
+        [id, b.newEndDate]);
+
+      await audit(c, {
+        actorUserId: req.actor!.userId, action: 'PLACEMENT_EXTENDED',
+        entityTable: 'placement', entityId: id,
+        previous: { end_date: p.end_date, status: p.status },
+        next: {
+          end_date: b.newEndDate,
+          original_end_date: p.original_end_date ?? p.end_date,
+          status: r.rows[0].status,
+        },
+        reason: b.reason,
       });
       return r.rows[0];
     });
