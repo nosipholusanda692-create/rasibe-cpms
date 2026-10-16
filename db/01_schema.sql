@@ -40,7 +40,7 @@ CREATE TYPE audit_action_enum      AS ENUM (
   'PASSWORD_RESET_REQUESTED','PASSWORD_SET',
   'TWO_FACTOR_ENABLED','TWO_FACTOR_DISABLED','TWO_FACTOR_RESET','RECOVERY_CODE_USED',
   'SETTING_CHANGED','INVOICE_APPROVED','PAYMENT_RECORDED',
-  'CONSULTANT_DEACTIVATED');
+  'CONSULTANT_DEACTIVATED','PLACEMENT_EXTENDED');
 CREATE TYPE account_token_purpose_enum AS ENUM ('INVITE', 'RESET');
 
 -- ---------------------------------------------------------------------
@@ -385,6 +385,9 @@ CREATE TABLE placement (
   rate_approved_by uuid REFERENCES app_user(user_id) ON DELETE SET NULL,
   rate_approved_at timestamptz,
   terminated_reason text,
+  -- FR-PLC-006: the end date moves, the original is kept (migrations-009).
+  original_end_date date,
+  extension_count int NOT NULL DEFAULT 0,
   superseded_by uuid REFERENCES placement(placement_id) ON DELETE SET NULL,
   created_at    timestamptz NOT NULL DEFAULT now(),
   updated_at    timestamptz NOT NULL DEFAULT now(),

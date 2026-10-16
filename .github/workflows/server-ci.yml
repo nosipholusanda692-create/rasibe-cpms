@@ -123,6 +123,19 @@ jobs:
           NODE_ENV: test
         run: npm run test:catalogue
 
+      # Extending a placement (FR-PLC-006). It builds its own consultant and
+      # placements, so it does not depend on what the suites above left behind.
+      - name: Run the placement extension tests
+        working-directory: server
+        env:
+          PGHOST: localhost
+          PGPORT: 5432
+          PGDATABASE: rasibe
+          PGUSER: rasibe_app
+          PGPASSWORD: rasibe_app_pw
+          NODE_ENV: test
+        run: npm run test:placements
+
       # Serving the built web and mobile clients from the API's origin. Needs
       # no database, and uses fixtures rather than a real build.
       - name: Run the client-serving tests
