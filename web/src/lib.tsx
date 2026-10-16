@@ -521,3 +521,74 @@ export function useLoad<T>(fn: () => Promise<T>, deps: unknown[] = []) {
 
   return { data, loading, error, reload };
 }
+
+/**
+ * Asks for a reason before a consequential action.
+ *
+ * Several rules require one — BR-005 for a rejection, and the audit trail for a
+ * rate change, an override, a suspension or a credit note. A browser prompt
+ * cannot enforce a minimum, cannot explain why the reason matters, and cannot
+ * be styled, so it is not used for anything that ends up in the audit log.
+ */
+export function ReasonModal({
+  title, intent, label, hint, confirmLabel, danger, extra, minChars = 5, onClose, onConfirm,
+}: {
+  title: string;
+  intent?: React.ReactNode;
+  label?: string;
+  hint?: string;
+  confirmLabel?: string;
+  danger?: boolean;
+  extra?: React.ReactNode;
+  minChars?: number;
+  onClose: () => void;
+  onConfirm: (reason: string) => Promise<void> | void;
+}) {
+  const [reason, setReason] = useState('');
+  const [touched, setTouched] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const tooShort = reason.trim().length < minChars;
+  const showError = touched && tooShort;
+
+  async function confirm() {
+    setTouched(true);
+    if (tooShort) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await onConfirm(reason.trim());
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not complete that');
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal title={title} onClose={onClose}
+      footer={<>
+        <button className="btn" onClick={onClose} disabled={busy}>Cancel</button>
+        <button className={`btn ${danger ? 'btn-danger' : 'btn-primary'}`}
+          onClick={confirm} disabled={busy || (touched && tooShort)}>
+          {busy ? 'Working…' : confirmLabel ?? 'Confirm'}
+        </button>
+      </>}>
+      {error && <Alert kind="error">{error}</Alert>}
+      {intent && <p className="small" style={{ marginTop: 0 }}>{intent}</p>}
+      {extra}
+      <Field label={label ?? 'Reason'} required
+        error={showError ? `Give a reason of at least ${minChars} characters` : undefined}
+        hint={hint ?? 'Recorded in the audit log against your name.'}>
+        <textarea value={reason} autoFocus
+          aria-invalid={showError ? true : undefined}
+          onChange={(e) => setReason(e.target.value)}
+          onBlur={() => setTouched(true)} />
+      </Field>
+      <div className={`char-count${reason.length > 480 ? ' near' : ''}`}>
+        {reason.trim().length} characters
+      </div>
+    </Modal>
+  );
+}
+

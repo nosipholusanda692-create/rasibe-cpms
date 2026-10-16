@@ -12,11 +12,19 @@ export default function SignIn() {
   const [forgot, setForgot] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [touched, setTouched] = useState<{ email?: boolean; password?: boolean }>({});
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  const emailError = email && !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email.trim())
+    ? 'Enter a valid email address' : undefined;
+  const showEmailError = touched.email && !!emailError;
+  const canSubmit = email.trim() !== '' && password !== '' && !emailError;
+
   async function submit(e: React.FormEvent) {
     e.preventDefault();
+    setTouched({ email: true, password: true });
+    if (!canSubmit) return;
     setBusy(true);
     setError(null);
     try {
@@ -53,7 +61,10 @@ export default function SignIn() {
             <label>Email address</label>
             <input type="email" value={email} autoComplete="username" required
               inputMode="email" autoCapitalize="none"
-              onChange={(e) => setEmail(e.target.value)} />
+              aria-invalid={showEmailError ? true : undefined}
+              onChange={(e) => setEmail(e.target.value)}
+              onBlur={() => setTouched((t) => ({ ...t, email: true }))} />
+            {showEmailError && <div className="field-error">{emailError}</div>}
           </div>
 
           <div className="field">
@@ -62,7 +73,8 @@ export default function SignIn() {
               onChange={(e) => setPassword(e.target.value)} />
           </div>
 
-          <button className="btn btn-primary btn-block" type="submit" disabled={busy}>
+          <button className="btn btn-primary btn-block" type="submit"
+            disabled={busy || (touched.email && !canSubmit)}>
             {busy ? 'Signing in…' : 'Sign in'}
           </button>
 

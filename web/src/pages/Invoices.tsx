@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link, useParams, useNavigate } from 'react-router-dom';
-import { api, useAuth, useLoad, Card, Status, Loading, Alert, Empty, Field, Modal, money, hours, date, titleCase } from '../lib';
+import { api, useAuth, useLoad, Card, Status, Loading, Alert, Empty, Field, Modal, ReasonModal, money, hours, date, titleCase } from '../lib';
 
 /** Invoice run and list (UC-20, UC-21). */
 export default function Invoices() {
@@ -185,6 +185,7 @@ export function InvoiceDetailPage() {
   const nav = useNavigate();
   const { user } = useAuth();
   const [msg, setMsg] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
+  const [crediting, setCrediting] = useState(false);
   const inv = useLoad<any>(() => api.get(`/invoices/${id}`), [id]);
   const isAdmin = user?.role === 'ADMINISTRATOR';
 
@@ -240,10 +241,9 @@ export function InvoiceDetailPage() {
                   e.preventDefault();
                   void exportCsv(d.invoice_number ?? `invoice-${id}`);
                 }}>Export for bookkeeper</a>
-                <button className="btn btn-danger" onClick={() => {
-                  const reason = window.prompt('Reason for the credit note:');
-                  if (reason && reason.length >= 5) void act('credit-note', { reason }, 'Credit note raised.');
-                }}>Raise credit note</button>
+                <button className="btn btn-danger" onClick={() => setCrediting(true)}>
+                  Raise credit note
+                </button>
               </>
             )}
           </div>
@@ -305,6 +305,19 @@ export function InvoiceDetailPage() {
           </div>
         )}
       </Card>
+
+      {crediting && (
+        <ReasonModal
+          title="Raise a credit note"
+          intent={`An issued invoice cannot be amended (BR-011). A credit note of ${money(-Number(d.total))} will be raised against ${d.invoice_number}, and a corrected invoice issued separately.`}
+          confirmLabel="Raise credit note"
+          danger
+          onClose={() => setCrediting(false)}
+          onConfirm={async (reason) => {
+            setCrediting(false);
+            await act('credit-note', { reason }, 'Credit note raised.');
+          }} />
+      )}
     </>
   );
 }

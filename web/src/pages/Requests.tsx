@@ -2,8 +2,11 @@ import { useState } from 'react';
 import { Link, useParams, useNavigate } from 'react-router-dom';
 import {
   api, useAuth, useLoad, useFormError, Card, Status, Loading, Alert, Empty, Person,
-  Field, Modal, money, date, titleCase,
+  Field, Modal, ReasonModal, money, date, titleCase,
 } from '../lib';
+import {
+  useForm, required, minLength, maxLength, number, min, max, afterField, notAbove, integer,
+} from '../validation';
 
 // =====================================================================
 // Role request list (UC-07, UC-08)
@@ -87,19 +90,32 @@ function RaiseRequest({ onClose, onSaved }: { onClose: () => void; onSaved: () =
   const clients = useLoad<any>(() => api.get('/clients'));
   const skills = useLoad<any>(() => api.get('/skills'));
   const [chosenSkills, setChosenSkills] = useState<string[]>([]);
-  const [f, setF] = useState({
-    clientId: '', title: '', description: '', seniority: 'SENIOR',
-    engagementType: 'FULL_TIME', workMode: 'ON_SITE', location: '',
-    quantity: '1', startDate: '', durationMonths: '', budgetRate: '',
-  });
-  const set = (k: string, v: string) => setF((p) => ({ ...p, [k]: v }));
 
-  // a client manager raises against their own company only
-  const clientOptions = clients.data?.items ?? [];
-  const effectiveClientId = user?.role === 'CLIENT_MANAGER'
-    ? (user.clients[0]?.clientId ?? '') : f.clientId;
+  const isClientManager = user?.role === 'CLIENT_MANAGER';
+
+  const form = useForm(
+    {
+      clientId: '', title: '', description: '', seniority: 'SENIOR',
+      engagementType: 'FULL_TIME', workMode: 'ON_SITE', location: '',
+      quantity: '1', startDate: '', durationMonths: '', budgetRate: '',
+    },
+    {
+      // a client manager raises against their own company, so there is nothing to pick
+      clientId: isClientManager ? [] : [required('A client company')],
+      title: [required('A role title'), minLength(3, 'The role title'), maxLength(200, 'The role title')],
+      description: [maxLength(2000, 'The description')],
+      quantity: [required('A number'), integer('The number of people'), min(1, 'The number of people'), max(50, 'The number of people')],
+      startDate: [],
+      durationMonths: [integer('The duration'), min(1, 'The duration'), max(60, 'The duration')],
+      budgetRate: [number('The budget rate'), min(0, 'The budget rate')],
+    },
+  );
+
+  const f = form.values;
+  const effectiveClientId = isClientManager ? (user?.clients[0]?.clientId ?? '') : f.clientId;
 
   async function save() {
+    if (!form.attemptSubmit()) return;
     setBusy(true); err.clear();
     try {
       await api.post('/requests', {
@@ -117,62 +133,67 @@ function RaiseRequest({ onClose, onSaved }: { onClose: () => void; onSaved: () =
         skills: chosenSkills.map((id) => ({ skillId: id, mandatory: true })),
       });
       onSaved();
-    } catch (e) { err.capture(e); } finally { setBusy(false); }
+    } catch (e) {
+      err.capture(e);
+      form.applyServerErrors((e as any)?.detail);
+    } finally { setBusy(false); }
   }
 
   return (
     <Modal title="Raise a role request" onClose={onClose}
       footer={<>
         <button className="btn" onClick={onClose}>Cancel</button>
-        <button className="btn btn-primary" onClick={save} disabled={busy}>
+        <button className="btn btn-primary" onClick={save}
+          disabled={busy || (form.submitted && !form.isValid)}>
           {busy ? 'Raising…' : 'Raise request'}
         </button>
       </>}>
       {err.error && <Alert kind="error">{err.error}</Alert>}
 
-      {user?.role !== 'CLIENT_MANAGER' && (
-        <Field label="Client company" required error={err.fieldError('clientId')}>
-          <select value={f.clientId} onChange={(e) => set('clientId', e.target.value)}>
+      {!isClientManager && (
+        <Field label="Client company" required error={form.errorFor('clientId')}>
+          <select {...form.fieldProps('clientId')}>
             <option value="">Choose a client</option>
-            {clientOptions.map((c: any) => (
+            {(clients.data?.items ?? []).map((c: any) => (
               <option key={c.client_id} value={c.client_id}>{c.legal_name}</option>
             ))}
           </select>
         </Field>
       )}
 
-      <Field label="Role title" required error={err.fieldError('title')}>
-        <input value={f.title} onChange={(e) => set('title', e.target.value)}
-          placeholder="Senior Java developer" />
+      <Field label="Role title" required error={form.errorFor('title')}>
+        <input {...form.fieldProps('title')} placeholder="Senior Java developer" />
       </Field>
-      <Field label="Description">
-        <textarea value={f.description} onChange={(e) => set('description', e.target.value)}
+
+      <Field label="Description" error={form.errorFor('description')}
+        hint={`${String(f.description).length} of 2000 characters`}>
+        <textarea {...form.fieldProps('description')}
           placeholder="What the consultant will be working on" />
       </Field>
 
       <div className="form-row">
         <Field label="Seniority">
-          <select value={f.seniority} onChange={(e) => set('seniority', e.target.value)}>
+          <select {...form.fieldProps('seniority')}>
             {['JUNIOR', 'INTERMEDIATE', 'SENIOR', 'LEAD', 'PRINCIPAL'].map((s) => (
               <option key={s} value={s}>{titleCase(s)}</option>
             ))}
           </select>
         </Field>
-        <Field label="How many" required>
-          <input type="number" min={1} value={f.quantity} onChange={(e) => set('quantity', e.target.value)} />
+        <Field label="How many" required error={form.errorFor('quantity')}>
+          <input type="number" min={1} {...form.fieldProps('quantity')} />
         </Field>
       </div>
 
       <div className="form-row">
         <Field label="Engagement">
-          <select value={f.engagementType} onChange={(e) => set('engagementType', e.target.value)}>
+          <select {...form.fieldProps('engagementType')}>
             {['FULL_TIME', 'PART_TIME', 'CONTRACT', 'FIXED_TERM'].map((s) => (
               <option key={s} value={s}>{titleCase(s)}</option>
             ))}
           </select>
         </Field>
         <Field label="Work mode">
-          <select value={f.workMode} onChange={(e) => set('workMode', e.target.value)}>
+          <select {...form.fieldProps('workMode')}>
             {['ON_SITE', 'HYBRID', 'REMOTE'].map((s) => (
               <option key={s} value={s}>{titleCase(s)}</option>
             ))}
@@ -181,18 +202,21 @@ function RaiseRequest({ onClose, onSaved }: { onClose: () => void; onSaved: () =
       </div>
 
       <div className="form-row">
-        <Field label="Start date"><input type="date" value={f.startDate}
-          onChange={(e) => set('startDate', e.target.value)} /></Field>
-        <Field label="Duration (months)"><input type="number" min={1} value={f.durationMonths}
-          onChange={(e) => set('durationMonths', e.target.value)} /></Field>
+        <Field label="Start date" error={form.errorFor('startDate')}>
+          <input type="date" {...form.fieldProps('startDate')} />
+        </Field>
+        <Field label="Duration (months)" error={form.errorFor('durationMonths')}>
+          <input type="number" min={1} {...form.fieldProps('durationMonths')} />
+        </Field>
       </div>
 
-      <Field label="Budget rate" hint="Per hour. The rate you expect to be billed.">
-        <input type="number" min={0} value={f.budgetRate}
-          onChange={(e) => set('budgetRate', e.target.value)} />
+      <Field label="Budget rate" error={form.errorFor('budgetRate')}
+        hint="Per hour. The rate you expect to be billed.">
+        <input type="number" min={0} step="0.01" {...form.fieldProps('budgetRate')} />
       </Field>
 
-      <Field label="Required skills">
+      <Field label="Required skills"
+        hint={chosenSkills.length ? `${chosenSkills.length} selected` : 'Optional, but a request with skills matches far better'}>
         <div className="row" style={{ flexWrap: 'wrap', gap: 6 }}>
           {(skills.data?.items ?? []).map((s: any) => {
             const on = chosenSkills.includes(s.skill_id);
@@ -222,6 +246,7 @@ export function RequestDetailPage() {
   const [tab, setTab] = useState<'submissions' | 'matches'>('submissions');
   const [msg, setMsg] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
   const [placing, setPlacing] = useState<any | null>(null);
+  const [declining, setDeclining] = useState<{ submissionId: string; outcome: string } | null>(null);
 
   const r = useLoad<any>(() => api.get(`/requests/${id}`), [id]);
   const subs = useLoad<any>(() => api.get(`/requests/${id}/submissions`), [id]);
@@ -245,14 +270,13 @@ export function RequestDetailPage() {
   }
 
   async function setOutcome(submissionId: string, outcome: string) {
-    const needsReason = ['DECLINED_BY_CLIENT', 'WITHDRAWN'].includes(outcome);
-    let reason: string | undefined;
-    if (needsReason) {
-      reason = window.prompt('Give a reason so the consultant can be told why:') ?? undefined;
-      if (!reason) return;
+    // declining or withdrawing needs an explanation the consultant can act on
+    if (['DECLINED_BY_CLIENT', 'WITHDRAWN'].includes(outcome)) {
+      setDeclining({ submissionId, outcome });
+      return;
     }
     try {
-      await api.patch(`/requests/submissions/${submissionId}`, { outcome, reason });
+      await api.patch(`/requests/submissions/${submissionId}`, { outcome });
       setMsg({ kind: 'success', text: 'Outcome recorded.' });
       subs.reload(); r.reload();
     } catch (e) {
@@ -398,6 +422,24 @@ export function RequestDetailPage() {
         )}
       </Card>
 
+      {declining && (
+        <ReasonModal
+          title={declining.outcome === 'WITHDRAWN' ? 'Withdraw this candidate' : 'Decline this candidate'}
+          intent="The consultant is told the outcome and the reason, so make it something they can act on."
+          label="Reason"
+          confirmLabel={declining.outcome === 'WITHDRAWN' ? 'Withdraw' : 'Decline'}
+          danger
+          onClose={() => setDeclining(null)}
+          onConfirm={async (reason) => {
+            await api.patch(`/requests/submissions/${declining.submissionId}`, {
+              outcome: declining.outcome, reason,
+            });
+            setDeclining(null);
+            setMsg({ kind: 'success', text: 'Outcome recorded and the consultant notified.' });
+            subs.reload(); r.reload();
+          }} />
+      )}
+
       {placing && (
         <CreatePlacement submission={placing} request={d}
           onClose={() => setPlacing(null)}
@@ -415,20 +457,36 @@ function CreatePlacement({
 }: { submission: any; request: any; onClose: () => void; onSaved: () => void }) {
   const err = useFormError();
   const [busy, setBusy] = useState(false);
-  const [f, setF] = useState({
-    jobTitle: request.title,
-    startDate: request.start_date?.slice(0, 10) ?? '',
-    endDate: '',
-    billRate: String(request.budget_rate ?? ''),
-    payRate: '',
-    engagementType: request.engagement_type ?? 'FULL_TIME',
-    workMode: request.work_mode ?? 'ON_SITE',
-  });
-  const set = (k: string, v: string) => setF((p) => ({ ...p, [k]: v }));
 
+  const form = useForm(
+    {
+      jobTitle: request.title ?? '',
+      startDate: request.start_date?.slice(0, 10) ?? '',
+      endDate: '',
+      billRate: String(request.budget_rate ?? ''),
+      payRate: '',
+      engagementType: request.engagement_type ?? 'FULL_TIME',
+      workMode: request.work_mode ?? 'ON_SITE',
+    },
+    {
+      jobTitle: [required('A job title'), minLength(2, 'The job title'), maxLength(200, 'The job title')],
+      startDate: [required('A start date')],
+      // BR-014, enforced here, on the server and as a check constraint
+      endDate: [required('An end date'), afterField('startDate', 'The end date', 'the start date')],
+      billRate: [required('A bill rate'), number('The bill rate'), min(0, 'The bill rate')],
+      payRate: [
+        required('A pay rate'), number('The pay rate'), min(0, 'The pay rate'),
+        notAbove('billRate', 'The pay rate', 'the bill rate'),
+      ],
+    },
+  );
+
+  const f = form.values;
   const margin = Number(f.billRate || 0) - Number(f.payRate || 0);
+  const marginShown = f.billRate !== '' && f.payRate !== '' && !form.errorFor('payRate');
 
   async function save() {
+    if (!form.attemptSubmit()) return;
     setBusy(true); err.clear();
     try {
       await api.post('/placements', {
@@ -445,44 +503,53 @@ function CreatePlacement({
         payRate: Number(f.payRate),
       });
       onSaved();
-    } catch (e) { err.capture(e); } finally { setBusy(false); }
+    } catch (e) {
+      err.capture(e);
+      // the server may object to something the form could not know, such as an
+      // overlapping placement (BR-001); show it against the field it concerns
+      form.applyServerErrors((e as any)?.detail);
+    } finally { setBusy(false); }
   }
 
   return (
     <Modal title="Create placement" onClose={onClose}
       footer={<>
         <button className="btn" onClick={onClose}>Cancel</button>
-        <button className="btn btn-primary" onClick={save} disabled={busy}>
+        <button className="btn btn-primary" onClick={save}
+          disabled={busy || (form.submitted && !form.isValid)}>
           {busy ? 'Creating…' : 'Create placement'}
         </button>
       </>}>
       {err.error && <Alert kind="error">{err.error}</Alert>}
 
-      <Field label="Job title" required><input value={f.jobTitle}
-        onChange={(e) => set('jobTitle', e.target.value)} /></Field>
+      <Field label="Job title" required error={form.errorFor('jobTitle')}>
+        <input {...form.fieldProps('jobTitle')} />
+      </Field>
 
       <div className="form-row">
-        <Field label="Start date" required error={err.fieldError('startDate')}>
-          <input type="date" value={f.startDate} onChange={(e) => set('startDate', e.target.value)} />
+        <Field label="Start date" required error={form.errorFor('startDate')}>
+          <input type="date" {...form.fieldProps('startDate')} />
         </Field>
-        <Field label="End date" required error={err.fieldError('endDate')}>
-          <input type="date" value={f.endDate} onChange={(e) => set('endDate', e.target.value)} />
+        <Field label="End date" required error={form.errorFor('endDate')}>
+          <input type="date" {...form.fieldProps('endDate')} />
         </Field>
       </div>
 
       <div className="form-row">
-        <Field label="Bill rate" required hint="Charged to the client">
-          <input type="number" min={0} value={f.billRate} onChange={(e) => set('billRate', e.target.value)} />
+        <Field label="Bill rate" required error={form.errorFor('billRate')}
+          hint="Charged to the client, per hour">
+          <input type="number" min={0} step="0.01" {...form.fieldProps('billRate')} />
         </Field>
-        <Field label="Pay rate" required hint="Paid to the consultant">
-          <input type="number" min={0} value={f.payRate} onChange={(e) => set('payRate', e.target.value)} />
+        <Field label="Pay rate" required error={form.errorFor('payRate')}
+          hint="Paid to the consultant, per hour">
+          <input type="number" min={0} step="0.01" {...form.fieldProps('payRate')} />
         </Field>
       </div>
 
-      {f.billRate && f.payRate && (
-        <Alert kind={margin < 0 ? 'error' : 'info'}>
+      {marginShown && (
+        <Alert kind="info">
           Margin {money(margin)} per hour.
-          {margin < 0 && ' The pay rate may not exceed the bill rate.'}
+          {margin === 0 && ' This placement earns nothing.'}
         </Alert>
       )}
 
