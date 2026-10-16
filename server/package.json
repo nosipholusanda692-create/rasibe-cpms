@@ -13,6 +13,7 @@
     "test:2fa": "tsx src/test/two-factor.ts",
     "encrypt-existing": "tsx src/scripts/encrypt-existing.ts",
     "db:setup": "tsx src/scripts/setup-database.ts",
+    "reset-demo-for-tests": "tsx src/scripts/reset-demo-for-tests.ts",
     "backup": "tsx src/scripts/backup.ts",
     "restore": "tsx src/scripts/restore.ts"
   },
