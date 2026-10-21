@@ -1,0 +1,9 @@
+{
+  "name": "rasibe-cpms",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "evidence": "node scripts/collect-evidence.mjs",
+    "evidence:quick": "node scripts/collect-evidence.mjs --quick"
+  }
+}
