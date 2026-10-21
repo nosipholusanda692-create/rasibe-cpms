@@ -28,7 +28,8 @@
     "test:notifications": "tsx src/test/notifications.ts",
     "test:paging": "tsx src/test/paging.ts",
     "test:validation": "tsx src/test/validation.ts",
-    "test:documents": "tsx src/test/documents.ts"
+    "test:documents": "tsx src/test/documents.ts",
+    "test:screens": "tsx src/test/screens.ts"
   },
   "dependencies": {
     "@node-rs/argon2": "^2.2.2",

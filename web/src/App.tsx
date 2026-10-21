@@ -22,6 +22,7 @@ import Invoices from './pages/Invoices';
 import InvoiceDetail from './pages/InvoiceDetail';
 import Reports from './pages/Reports';
 import Settings from './pages/Settings';
+import Retention from './pages/Retention';
 import Users from './pages/Users';
 import SetPassword from './pages/SetPassword';
 import Security from './pages/Security';
@@ -224,6 +225,7 @@ function useNav(): NavGroup[] {
   if (role === 'ADMINISTRATOR') {
     groups.push({ label: 'System', items: [
 { to: '/users', label: 'User accounts' },
+{ to: '/retention', label: 'Retention' },
 { to: '/settings', label: 'Settings' },
     ] });
   }
@@ -251,7 +253,7 @@ function Shell({ children }: { children: React.ReactNode }) {
     '/dashboard': 'Dashboard', '/consultants': 'Consultants', '/clients': 'Clients',
     '/requests': 'Role requests', '/placements': 'Placements', '/timesheets': 'Timesheets',
     '/invoices': 'Invoices', '/reports': 'Reports', '/settings': 'Settings',
-    '/approvals': 'Timesheet approvals', '/my/timesheets': 'My timesheets', '/users': 'User accounts',
+    '/approvals': 'Timesheet approvals', '/my/timesheets': 'My timesheets', '/users': 'User accounts', '/retention': 'Retention',
     '/my/placements': 'My placements', '/my/profile': 'My profile', '/skills': 'Skills',
     '/account/security': 'Sign-in security',
   };
@@ -394,6 +396,7 @@ export default function App() {
     <Route path="/invoices/:id" element={<Protected><InvoiceDetail /></Protected>} />
     <Route path="/reports" element={<Protected><Reports /></Protected>} />
     <Route path="/settings" element={<Protected><Settings /></Protected>} />
+    <Route path="/retention" element={<Protected><Retention /></Protected>} />
     <Route path="/users" element={<Protected><Users /></Protected>} />
     <Route path="/account/security" element={<Protected><Security /></Protected>} />
     <Route path="*" element={<Navigate to="/" replace />} />

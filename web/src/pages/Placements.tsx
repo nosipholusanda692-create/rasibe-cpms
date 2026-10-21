@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { api, useAuth, useLoad, Card, Status, Loading, Alert, Empty, Person, Field, Modal, ReasonModal, Pager, usePaging, money, date, titleCase } from '../lib';
+import { api, useAuth, useLoad, useFormError, Card, Status, Loading, Alert, Empty, Person, Field, Modal, ReasonModal, Pager, usePaging, money, date, titleCase } from '../lib';
+import { useForm, required, reason } from '../validation';
 
 /** Placement list. `mine` serves the consultant's own view. */
 export default function Placements({ mine }: { mine?: boolean }) {
@@ -8,6 +9,7 @@ export default function Placements({ mine }: { mine?: boolean }) {
   const [msg, setMsg] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
   const [rateChange, setRateChange] = useState<any | null>(null);
   const [terminating, setTerminating] = useState<any | null>(null);
+  const [extending, setExtending] = useState<any | null>(null);
 
   const qs = new URLSearchParams();
   if (status) qs.set('status', status);
@@ -91,6 +93,12 @@ export default function Placements({ mine }: { mine?: boolean }) {
                     </td>
                     <td className="mono small">
                       {date(p.start_date)} – {date(p.end_date)}
+                      {p.extension_count > 0 && (
+                        <div className="person-role">
+                          Extended {p.extension_count === 1 ? 'once' : `${p.extension_count} times`}
+                          {p.original_end_date && ` · originally to ${date(p.original_end_date)}`}
+                        </div>
+                      )}
                       {p.days_remaining <= 30 && p.days_remaining >= 0 && (
                         <div><span className={`pill pill-${p.days_remaining <= 14 ? 'red' : 'amber'}`}>
                           {p.days_remaining} days left</span></div>
@@ -110,6 +118,8 @@ export default function Placements({ mine }: { mine?: boolean }) {
                           {['ACTIVE', 'ENDING_SOON', 'PENDING_START'].includes(p.status) && (
                             <>
                               <button className="btn btn-sm" onClick={() => setRateChange(p)}>Change rates</button>
+                              <button className="btn btn-sm"
+                                onClick={() => setExtending(p)}>Extend</button>
                               <button className="btn btn-sm btn-danger"
                                 onClick={() => setTerminating(p)}>End early</button>
                             </>
@@ -123,6 +133,13 @@ export default function Placements({ mine }: { mine?: boolean }) {
             </table>
           )}
       </Card>
+
+      {extending && (
+        <ExtendPlacement
+          placement={extending}
+          onClose={() => setExtending(null)}
+          onSaved={(text) => { setExtending(null); list.reload(); setMsg({ kind: 'success', text }); }} />
+      )}
 
       {terminating && (
         <ReasonModal
@@ -193,6 +210,122 @@ function RateChange({ placement, onClose, onSaved }: { placement: any; onClose: 
       <Alert kind="warn">
         Changing a rate returns this placement to awaiting approval. Weeks that have
         already been submitted keep the rate they were submitted at.
+      </Alert>
+    </Modal>
+  );
+}
+
+/**
+ * Extending a placement (FR-PLC-006).
+ *
+ * An extension moves the end date of the same placement. It does not create a
+ * second one: a consultant who stays six months longer at the same client is
+ * one engagement, and splitting it would double-count the placement in every
+ * report and risk tripping the overlap rule against itself.
+ *
+ * The original end date is kept, so the history of an engagement that ran twice
+ * as long as agreed is still legible a year later.
+ */
+function ExtendPlacement({
+  placement, onClose, onSaved,
+}: { placement: any; onClose: () => void; onSaved: (text: string) => void }) {
+  const err = useFormError();
+  const [busy, setBusy] = useState(false);
+
+  const currentEnd = String(placement.end_date).slice(0, 10);
+
+  const form = useForm(
+    { newEndDate: '', reason: '' },
+    {
+      newEndDate: [
+        required('A new end date'),
+        (v) => (v && v <= currentEnd
+          ? `The new end date must be later than ${date(currentEnd)}` : undefined),
+        (v) => {
+          if (!v) return undefined;
+          const limit = new Date(currentEnd);
+          limit.setFullYear(limit.getFullYear() + 2);
+          return v > limit.toISOString().slice(0, 10)
+            ? 'That is more than two years past the current end date. Check the year.'
+            : undefined;
+        },
+      ],
+      reason: [reason],
+    },
+  );
+
+  const f = form.values;
+
+  // what the extension actually buys, in plain terms
+  const extraDays = f.newEndDate && f.newEndDate > currentEnd
+    ? Math.round((new Date(f.newEndDate).getTime() - new Date(currentEnd).getTime()) / 86_400_000)
+    : 0;
+  const extraMonths = extraDays ? Math.round(extraDays / 30.44) : 0;
+
+  async function save() {
+    if (!form.attemptSubmit()) return;
+    setBusy(true); err.clear();
+    try {
+      await api.post(`/placements/${placement.placement_id}/extend`, {
+        newEndDate: f.newEndDate,
+        reason: f.reason.trim(),
+      });
+      onSaved(
+        `${placement.consultant_name} now runs to ${date(f.newEndDate)} at ${placement.client_name}.`,
+      );
+    } catch (e) {
+      err.capture(e);
+      form.applyServerErrors((e as any)?.detail);
+    } finally { setBusy(false); }
+  }
+
+  return (
+    <Modal title={`Extend ${placement.reference}`} onClose={onClose}
+      footer={<>
+        <button className="btn" onClick={onClose}>Cancel</button>
+        <button className="btn btn-primary" onClick={save}
+          disabled={busy || (form.submitted && !form.isValid)}>
+          {busy ? 'Extending…' : 'Extend placement'}
+        </button>
+      </>}>
+      {err.error && <Alert kind="error">{err.error}</Alert>}
+
+      <dl className="def-list" style={{ marginBottom: 16 }}>
+        <div><dt>Consultant</dt><dd>{placement.consultant_name}</dd></div>
+        <div><dt>Client</dt><dd>{placement.client_name}</dd></div>
+        <div><dt>Currently runs to</dt><dd>{date(currentEnd)}</dd></div>
+      </dl>
+
+      {placement.extension_count > 0 && (
+        <Alert kind="info">
+          This placement has already been extended
+          {placement.extension_count === 1 ? ' once' : ` ${placement.extension_count} times`}
+          {placement.original_end_date && `, from ${date(placement.original_end_date)}`}.
+        </Alert>
+      )}
+
+      <Field label="New end date" required error={form.errorFor('newEndDate')}>
+        <input type="date" min={currentEnd} {...form.fieldProps('newEndDate')} />
+      </Field>
+
+      {extraDays > 0 && !form.errorFor('newEndDate') && (
+        <Alert kind="info">
+          {extraMonths >= 1
+            ? `${extraMonths} month${extraMonths === 1 ? '' : 's'} longer`
+            : `${extraDays} day${extraDays === 1 ? '' : 's'} longer`}
+          . The rates stay as they are; change them separately if they have been renegotiated.
+        </Alert>
+      )}
+
+      <Field label="Reason" required error={form.errorFor('reason')}
+        hint="Recorded in the audit log with the dates before and after.">
+        <textarea {...form.fieldProps('reason')}
+          placeholder="Client extended the project to the end of the financial year." />
+      </Field>
+
+      <Alert kind="warn">
+        The same placement continues, so its timesheets, approvals and invoices stay together
+        as one engagement. The original end date is kept.
       </Alert>
     </Modal>
   );
