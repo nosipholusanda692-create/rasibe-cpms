@@ -15,8 +15,9 @@
 import { anonQuery, closePool } from '../lib/db.js';
 import { hashPassword } from '../lib/passwords.js';
 
-// The live Neon endpoint (docs/DEPLOY.md). Its pooled host carries the same id.
-const LIVE_ENDPOINTS = ['ep-morning-wave-ba31c64f'];
+// The live Neon endpoint (docs/DEPLOY.md, section 8). Its pooled host carries the
+// same id. The first project was deleted on 16 November 2026 after the move.
+const LIVE_ENDPOINTS = ['ep-summer-glade-b9vxgm15'];
 const PUBLISHED_PASSWORD = 'Password123!';
 
 function refusal(): string | null {

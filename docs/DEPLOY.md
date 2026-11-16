@@ -85,7 +85,7 @@ value off the screen and out of the command history.
 function Secret($prompt) { [Net.NetworkCredential]::new('', (Read-Host -AsSecureString $prompt)).Password }
 
 $env:NODE_ENV = 'production'
-$env:BACKUP_PGHOST = 'ep-morning-wave-ba31c64f.c-8.eu-central-1.aws.neon.tech'
+$env:BACKUP_PGHOST = '<direct host from the Neon Connect window, pooling off>'
 $env:BACKUP_PGUSER = 'neondb_owner'
 $env:BACKUP_PGDATABASE = 'rasibe'
 $env:PGSSLMODE = 'verify-full'
@@ -394,6 +394,54 @@ manual so that what is live changes when someone decides it should.
   start if the database login fails.
 - **Changing a secret.** Rotating `DATA_ENCRYPTION_KEY`, `DATA_INDEX_KEY` or
   `PASSWORD_PEPPER` is not a settings change; see ENCRYPTION.md and PASSWORDS.md.
+
+## 8. Moving to a new Neon project
+
+Done on 16 November 2026, when the free plan's monthly compute allowance ran
+out on the first project. The data and the three keys move; nothing about the
+application changes. The sign-ins, passwords and encrypted columns keep working
+because the same `DATA_ENCRYPTION_KEY`, `DATA_INDEX_KEY` and `PASSWORD_PEPPER`
+are used throughout.
+
+1. **Back up the old database** (section 5), with the three keys set. Keep the
+   `.dump` and `.json` outside the repository and outside OneDrive.
+2. **Create the new project** as in section 1. Do not create the `rasibe`
+   database: the restore creates it. Take the direct host and reset the owner
+   password.
+3. **Create the two login roles** in the new project's SQL Editor, on the
+   default database, before restoring. The dump grants to them, and
+   `pg_restore --exit-on-error` stops without them. Use the same passwords as
+   before and the Azure `PGPASSWORD` need not change.
+   ```sql
+   CREATE ROLE rasibe_app LOGIN PASSWORD '...';
+   CREATE ROLE rasibe_reporting LOGIN PASSWORD '...';
+   ```
+4. **Restore** into the name `rasibe`, from `server/`, with `BACKUP_PGHOST`,
+   `BACKUP_PGUSER`, `BACKUP_PGPASSWORD`, `PGSSLMODE=verify-full`,
+   `PGSSLROOTCERT=system`, `PG_DOCKER_CONTAINER` and the three keys set for the
+   new project:
+   ```powershell
+   npm run restore -- C:\rasibe\backups\<newest>.json rasibe
+   ```
+   A dump taken on Neon carries `ALTER DEFAULT PRIVILEGES FOR ROLE cloud_admin`.
+   Only that platform role may replay it, so a restore as `neondb_owner` used to
+   stop there with "permission denied to change default privileges". The restore
+   now leaves those entries out; the new project already has its own, and this
+   project sets none (`restoreList` in `server/src/lib/backup.ts`).
+5. **Apply any migration the old database never received**, as the owner, if the
+   code being deployed expects it. The old database in this move had not had the
+   two document migrations, so `009-document-storage.sql` and
+   `010-document-read-leak.sql` were run on the new one after the restore.
+6. **Point the app at it**: in the Azure app settings change `PGHOST` (and
+   `PGPASSWORD` if the role password changed), then run the deploy workflow.
+   `PGDATABASE`, `PGUSER`, `PGSSLMODE` and the three keys stay as they were.
+7. **Update the guard** in `server/src/scripts/reset-demo-for-tests.ts`, which
+   refuses to reset the live database by its endpoint id, so it names the new
+   one.
+8. **Check** `/api/health` reports `"database":"connected"`, then sign in as
+   each of the four roles on the web client and the consultant on `/m/`. Take a
+   second backup from the new project and restore it into a scratch database to
+   prove the new project's own backups work, before retiring the old one.
 
 ## Alternative: Azure Database for PostgreSQL
 
