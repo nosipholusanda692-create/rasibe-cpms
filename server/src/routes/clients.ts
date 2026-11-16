@@ -35,7 +35,7 @@ clientsRouter.get('/', requireAuth, async (req, res, next) => {
 
 clientsRouter.get('/:id', requireAuth, async (req, res, next) => {
   try {
-    const id = z.string().uuid().parse(req.params.id);
+    const id = z.guid().parse(req.params.id);
     const rows = await query<any>(
       req.actor!,
       `SELECT c.*,
@@ -87,7 +87,7 @@ clientsRouter.post('/', requireInternal, async (req, res, next) => {
 
 clientsRouter.post('/:id/contacts', requireInternal, async (req, res, next) => {
   try {
-    const id = z.string().uuid().parse(req.params.id);
+    const id = z.guid().parse(req.params.id);
     const b = z.object({
       firstName: z.string().min(1), lastName: z.string().min(1),
       jobTitle: z.string().optional(), email: z.string().email(),

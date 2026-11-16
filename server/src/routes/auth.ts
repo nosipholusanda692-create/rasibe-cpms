@@ -955,7 +955,7 @@ async function clearTwoFactor(exec: Exec, userId: string): Promise<void> {
  */
 authRouter.post('/2fa/reset/:userId', requireAdmin, async (req, res, next) => {
   try {
-    const userId = z.string().uuid().safeParse(req.params.userId);
+    const userId = z.guid().safeParse(req.params.userId);
     if (!userId.success) throw notFound('No such user');
     const parsed = z
       .object({

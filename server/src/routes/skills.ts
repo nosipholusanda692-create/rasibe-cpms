@@ -64,7 +64,7 @@ skillsRouter.post('/', requireInternal, async (req, res, next) => {
  */
 skillsRouter.patch('/:id', requireInternal, async (req, res, next) => {
   try {
-    const id = z.string().uuid().parse(req.params.id);
+    const id = z.guid().parse(req.params.id);
     const b = z.object({
       name: z.string().min(1, 'Enter a skill name').max(120).optional(),
       category: z.string().max(80).nullable().optional(),
@@ -95,7 +95,7 @@ skillsRouter.patch('/:id', requireInternal, async (req, res, next) => {
  */
 skillsRouter.post('/:id/retire', requireInternal, async (req, res, next) => {
   try {
-    const id = z.string().uuid().parse(req.params.id);
+    const id = z.guid().parse(req.params.id);
     const rows = await query<any>(
       req.actor!,
       `UPDATE skill SET is_active = false WHERE skill_id = $1

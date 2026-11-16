@@ -20,7 +20,7 @@ invoicesRouter.get('/', requireAuth, async (req, res, next) => {
   try {
     const q = z.object({
       status: enumList(INVOICE_STATUS).optional(),
-      clientId: z.string().uuid().optional(),
+      clientId: z.guid().optional(),
     }).parse(req.query);
 
     const page = readPage(req.query);
@@ -57,7 +57,7 @@ invoicesRouter.get('/', requireAuth, async (req, res, next) => {
 
 invoicesRouter.get('/:id', requireAuth, async (req, res, next) => {
   try {
-    const id = z.string().uuid().parse(req.params.id);
+    const id = z.guid().parse(req.params.id);
     const rows = await query<any>(
       req.actor!,
       `SELECT i.*, cl.legal_name AS client_name, cl.billing_address, cl.vat_number,
@@ -86,7 +86,7 @@ invoicesRouter.get('/:id', requireAuth, async (req, res, next) => {
 invoicesRouter.post('/prepare', requireAdmin, async (req, res, next) => {
   try {
     const b = z.object({
-      clientId: z.string().uuid(),
+      clientId: z.guid(),
       periodStart: z.string(),
       periodEnd: z.string(),
     }).strict().parse(req.body);
@@ -192,7 +192,7 @@ invoicesRouter.post('/prepare', requireAdmin, async (req, res, next) => {
 
 invoicesRouter.post('/:id/approve', requireAdmin, async (req, res, next) => {
   try {
-    const id = z.string().uuid().parse(req.params.id);
+    const id = z.guid().parse(req.params.id);
     // FR-INV-006: an invoice may not be issued without this approval, so the
     // approval is itself a financially significant action (NFR-SEC-011).
     const row = await withActor(req.actor!, async (c) => {
@@ -221,7 +221,7 @@ invoicesRouter.post('/:id/approve', requireAdmin, async (req, res, next) => {
 invoicesRouter.post('/:id/issue', requireAdmin, async (req, res, next) => {
   try {
     assertCapability(req.actor!.role, 'issue_invoice');
-    const id = z.string().uuid().parse(req.params.id);
+    const id = z.guid().parse(req.params.id);
 
     const out = await withActor(req.actor!, async (c) => {
       const cur = await c.query(`SELECT * FROM invoice WHERE invoice_id = $1`, [id]);
@@ -275,7 +275,7 @@ invoicesRouter.post('/:id/issue', requireAdmin, async (req, res, next) => {
 /** Correction is a credit note, never an amendment (BR-011). */
 invoicesRouter.post('/:id/credit-note', requireAdmin, async (req, res, next) => {
   try {
-    const id = z.string().uuid().parse(req.params.id);
+    const id = z.guid().parse(req.params.id);
     const b = z.object({ reason: z.string().min(5, 'Give a reason for the credit note') }).strict().parse(req.body);
 
     const out = await withActor(req.actor!, async (c) => {
@@ -316,7 +316,7 @@ invoicesRouter.post('/:id/credit-note', requireAdmin, async (req, res, next) => 
 /** Export for the bookkeeper. Records that an export happened, nothing more. */
 invoicesRouter.post('/:id/export', requireAdmin, async (req, res, next) => {
   try {
-    const id = z.string().uuid().parse(req.params.id);
+    const id = z.guid().parse(req.params.id);
     const out = await withActor(req.actor!, async (c) => {
       const inv = await c.query(
         `SELECT i.*, cl.legal_name FROM invoice i
@@ -342,7 +342,7 @@ invoicesRouter.post('/:id/export', requireAdmin, async (req, res, next) => {
 
 invoicesRouter.post('/:id/payment', requireAdmin, async (req, res, next) => {
   try {
-    const id = z.string().uuid().parse(req.params.id);
+    const id = z.guid().parse(req.params.id);
     const b = z.object({ amount: z.number().min(0) }).strict().parse(req.body);
     const row = await withActor(req.actor!, async (c) => {
       const cur = await c.query(
@@ -495,7 +495,7 @@ reportsRouter.get('/audit', requireAdmin, async (req, res, next) => {
     assertCapability(req.actor!.role, 'view_audit');
     const q = z.object({
       entityTable: z.string().max(60).optional(),
-      entityId: z.string().uuid().optional(),
+      entityId: z.guid().optional(),
       limit: z.coerce.number().min(1).max(500).default(100),
     }).parse(req.query);
 

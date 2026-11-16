@@ -48,8 +48,8 @@ function mayRead(role: string, doc: { is_restricted: boolean; consultant_id: str
 documentsRouter.get('/', requireAuth, async (req, res, next) => {
   try {
     const q = z.object({
-      consultantId: z.string().uuid().optional(),
-      placementId: z.string().uuid().optional(),
+      consultantId: z.guid().optional(),
+      placementId: z.guid().optional(),
       includeSuperseded: z.coerce.boolean().default(false),
     }).parse(req.query);
 
@@ -84,8 +84,8 @@ documentsRouter.get('/', requireAuth, async (req, res, next) => {
 documentsRouter.post('/', requireInternal, upload.single('file'), async (req, res, next) => {
   try {
     const b = z.object({
-      consultantId: z.string().uuid().optional(),
-      placementId: z.string().uuid().optional(),
+      consultantId: z.guid().optional(),
+      placementId: z.guid().optional(),
       docType: z.enum(DOC_TYPES),
       expiresOn: z.string().optional(),
     }).parse(req.body);
@@ -178,7 +178,7 @@ documentsRouter.post('/', requireInternal, upload.single('file'), async (req, re
  */
 documentsRouter.post('/:id/download-link', requireAuth, async (req, res, next) => {
   try {
-    const id = z.string().uuid().parse(req.params.id);
+    const id = z.guid().parse(req.params.id);
 
     const out = await withActor(req.actor!, async (c) => {
       const d = await c.query(
@@ -278,7 +278,7 @@ documentsRouter.get('/download/:token', requireAuth, async (req, res, next) => {
  */
 documentsRouter.post('/:id/remove', requireAdmin, async (req, res, next) => {
   try {
-    const id = z.string().uuid().parse(req.params.id);
+    const id = z.guid().parse(req.params.id);
     const b = z.object({
       reason: z.string().min(5, 'Give a reason of at least five characters'),
     }).parse(req.body);

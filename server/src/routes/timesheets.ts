@@ -29,7 +29,7 @@ timesheetsRouter.get('/', requireAuth, async (req, res, next) => {
   try {
     const q = z.object({
       status: enumList(TIMESHEET_STATUS).optional(),
-      placementId: z.string().uuid().optional(),
+      placementId: z.guid().optional(),
       weekStart: isoDate.optional(),
       outstanding: queryBool(false),
     }).parse(req.query);
@@ -82,7 +82,7 @@ timesheetsRouter.get('/', requireAuth, async (req, res, next) => {
 
 timesheetsRouter.get('/:id', requireAuth, async (req, res, next) => {
   try {
-    const id = z.string().uuid().parse(req.params.id);
+    const id = z.guid().parse(req.params.id);
     const rows = await query<any>(
       req.actor!,
       `SELECT t.*, p.reference AS placement_reference, p.job_title,
@@ -165,7 +165,7 @@ const lineSchema = z.object({
 /** Saves the week without submitting it. Permitted only while it is a draft. */
 timesheetsRouter.put('/:id/lines', requireAuth, async (req, res, next) => {
   try {
-    const id = z.string().uuid().parse(req.params.id);
+    const id = z.guid().parse(req.params.id);
     const b = z.object({ lines: z.array(lineSchema) }).strict().parse(req.body);
 
     const out = await withActor(req.actor!, async (c) => {
@@ -205,7 +205,7 @@ timesheetsRouter.put('/:id/lines', requireAuth, async (req, res, next) => {
 timesheetsRouter.post('/:id/submit', requireAuth, async (req, res, next) => {
   try {
     assertCapability(req.actor!.role, 'submit_timesheet');
-    const id = z.string().uuid().parse(req.params.id);
+    const id = z.guid().parse(req.params.id);
 
     const out = await withActor(req.actor!, async (c) => {
       const t = await c.query(
@@ -257,7 +257,7 @@ timesheetsRouter.post('/:id/submit', requireAuth, async (req, res, next) => {
 timesheetsRouter.post('/:id/decision', requireAuth, async (req, res, next) => {
   try {
     assertCapability(req.actor!.role, 'approve_timesheet');
-    const id = z.string().uuid().parse(req.params.id);
+    const id = z.guid().parse(req.params.id);
     const b = z.object({
       decision: z.enum(['APPROVE', 'REJECT']),
       reason: z.string().optional(),
@@ -316,7 +316,7 @@ timesheetsRouter.post('/:id/decision', requireAuth, async (req, res, next) => {
 /** Administrator override: returns an approved week for correction (UC-19). */
 timesheetsRouter.post('/:id/override', requireAdmin, async (req, res, next) => {
   try {
-    const id = z.string().uuid().parse(req.params.id);
+    const id = z.guid().parse(req.params.id);
     const b = z.object({ reason: z.string().min(5, 'Give a reason for the override') }).strict().parse(req.body);
 
     const out = await withActor(req.actor!, async (c) => {
@@ -350,8 +350,8 @@ timesheetsRouter.post('/sync', requireAuth, async (req, res, next) => {
   try {
     assertCapability(req.actor!.role, 'submit_timesheet');
     const b = z.object({
-      clientUuid: z.string().uuid(),
-      placementId: z.string().uuid(),
+      clientUuid: z.guid(),
+      placementId: z.guid(),
       weekStart: z.string(),
       rowVersion: z.number().int().min(0).default(0),
       submit: z.boolean().default(true),

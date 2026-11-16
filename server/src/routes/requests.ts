@@ -17,7 +17,7 @@ requestsRouter.get('/', requireAuth, async (req, res, next) => {
   try {
     const q = z.object({
       status: enumList(REQUEST_STATUS).optional(),
-      clientId: z.string().uuid().optional(),
+      clientId: z.guid().optional(),
       search: searchText.optional(),
     }).parse(req.query);
 
@@ -64,7 +64,7 @@ requestsRouter.get('/', requireAuth, async (req, res, next) => {
 
 requestsRouter.get('/:id', requireAuth, async (req, res, next) => {
   try {
-    const id = z.string().uuid().parse(req.params.id);
+    const id = z.guid().parse(req.params.id);
     const rows = await query<any>(
       req.actor!,
       `SELECT r.*, c.legal_name AS client_name,
@@ -84,8 +84,8 @@ requestsRouter.get('/:id', requireAuth, async (req, res, next) => {
 });
 
 const requestBody = z.object({
-  clientId: z.string().uuid(),
-  contactId: z.string().uuid().optional(),
+  clientId: z.guid(),
+  contactId: z.guid().optional(),
   title: z.string().min(3, 'Give the role a title'),
   description: z.string().optional(),
   seniority: z.enum(['JUNIOR', 'INTERMEDIATE', 'SENIOR', 'LEAD', 'PRINCIPAL']).optional(),
@@ -97,7 +97,7 @@ const requestBody = z.object({
   durationMonths: z.number().min(1).optional(),
   budgetRate: z.number().min(0).optional(),
   skills: z.array(z.object({
-    skillId: z.string().uuid(),
+    skillId: z.guid(),
     mandatory: z.boolean().default(true),
     minProficiency: z.enum(['BASIC', 'INTERMEDIATE', 'ADVANCED', 'EXPERT']).optional(),
     minYears: z.number().min(0).optional(),
@@ -156,7 +156,7 @@ requestsRouter.post('/', requireAuth, async (req, res, next) => {
 
 requestsRouter.patch('/:id/status', requireAuth, async (req, res, next) => {
   try {
-    const id = z.string().uuid().parse(req.params.id);
+    const id = z.guid().parse(req.params.id);
     const b = z.object({
       status: z.enum(['DRAFT', 'OPEN', 'SHORTLISTING', 'INTERVIEWING', 'FILLED', 'CANCELLED']),
       reason: z.string().optional(),
@@ -184,7 +184,7 @@ requestsRouter.patch('/:id/status', requireAuth, async (req, res, next) => {
 // =====================================================================
 requestsRouter.get('/:id/matches', requireInternal, async (req, res, next) => {
   try {
-    const id = z.string().uuid().parse(req.params.id);
+    const id = z.guid().parse(req.params.id);
     const rows = await query<any>(
       req.actor!,
       `WITH req AS (SELECT * FROM resource_request WHERE request_id = $1),
@@ -220,7 +220,7 @@ requestsRouter.get('/:id/matches', requireInternal, async (req, res, next) => {
 // =====================================================================
 requestsRouter.get('/:id/submissions', requireAuth, async (req, res, next) => {
   try {
-    const id = z.string().uuid().parse(req.params.id);
+    const id = z.guid().parse(req.params.id);
 
     // A client manager sees the professional profile only: no identity number,
     // no pay rate, no personal contact details (NFR-PRI-003).
@@ -264,9 +264,9 @@ requestsRouter.get('/:id/submissions', requireAuth, async (req, res, next) => {
 requestsRouter.post('/:id/submissions', requireInternal, async (req, res, next) => {
   try {
     assertCapability(req.actor!.role, 'submit_candidate');
-    const id = z.string().uuid().parse(req.params.id);
+    const id = z.guid().parse(req.params.id);
     const b = z.object({
-      consultantId: z.string().uuid(),
+      consultantId: z.guid(),
       proposedBillRate: z.number().min(0).optional(),
       proposedPayRate: z.number().min(0).optional(),
     }).strict().parse(req.body);
@@ -327,7 +327,7 @@ requestsRouter.post('/:id/submissions', requireInternal, async (req, res, next) 
 requestsRouter.patch('/submissions/:sid', requireAuth, async (req, res, next) => {
   try {
     assertCapability(req.actor!.role, 'review_candidates');
-    const sid = z.string().uuid().parse(req.params.sid);
+    const sid = z.guid().parse(req.params.sid);
     const b = z.object({
       outcome: z.enum(['SUBMITTED', 'SHORTLISTED', 'INTERVIEWING', 'OFFERED', 'PLACED',
         'DECLINED_BY_CLIENT', 'WITHDRAWN']),
@@ -374,8 +374,8 @@ placementsRouter.get('/', requireAuth, async (req, res, next) => {
   try {
     const q = z.object({
       status: enumList(PLACEMENT_STATUS).optional(),
-      clientId: z.string().uuid().optional(),
-      consultantId: z.string().uuid().optional(),
+      clientId: z.guid().optional(),
+      consultantId: z.guid().optional(),
       endingWithinDays: queryInt(0, 3650).optional(),
     }).parse(req.query);
 
@@ -426,11 +426,11 @@ placementsRouter.get('/', requireAuth, async (req, res, next) => {
 });
 
 const placementBody = z.object({
-  submissionId: z.string().uuid().optional(),
-  consultantId: z.string().uuid(),
-  clientId: z.string().uuid(),
-  requestId: z.string().uuid().optional(),
-  approverContactId: z.string().uuid().optional(),
+  submissionId: z.guid().optional(),
+  consultantId: z.guid(),
+  clientId: z.guid(),
+  requestId: z.guid().optional(),
+  approverContactId: z.guid().optional(),
   jobTitle: z.string().min(2, 'Enter the job title'),
   engagementType: z.enum(['FULL_TIME', 'PART_TIME', 'CONTRACT', 'FIXED_TERM']).default('FULL_TIME'),
   workMode: z.enum(['ON_SITE', 'HYBRID', 'REMOTE']).default('ON_SITE'),
@@ -489,7 +489,7 @@ placementsRouter.post('/', requireInternal, async (req, res, next) => {
 /** Approving the rates is what allows a placement to go live (BR-009). */
 placementsRouter.post('/:id/approve-rates', requireAdmin, async (req, res, next) => {
   try {
-    const id = z.string().uuid().parse(req.params.id);
+    const id = z.guid().parse(req.params.id);
     const body = optionalReason.parse(req.body ?? {});
     const out = await withActor(req.actor!, async (c) => {
       const cur = await c.query(`SELECT * FROM placement WHERE placement_id = $1`, [id]);
@@ -532,7 +532,7 @@ const MAX_EXTENSION_YEARS = 5;
 
 placementsRouter.post('/:id/extend', requireAdmin, async (req, res, next) => {
   try {
-    const id = z.string().uuid().parse(req.params.id);
+    const id = z.guid().parse(req.params.id);
     const b = z.object({
       newEndDate: isoDate,
       reason: z.string().trim().min(5, 'Give a reason of at least five characters').max(500),
@@ -599,7 +599,7 @@ placementsRouter.post('/:id/extend', requireAdmin, async (req, res, next) => {
 
 placementsRouter.post('/:id/terminate', requireAdmin, async (req, res, next) => {
   try {
-    const id = z.string().uuid().parse(req.params.id);
+    const id = z.guid().parse(req.params.id);
     const b = z.object({ reason: z.string().min(5, 'Give a reason of at least five characters') }).strict()
       .parse(req.body);
     const out = await withActor(req.actor!, async (c) => {
@@ -620,7 +620,7 @@ placementsRouter.post('/:id/terminate', requireAdmin, async (req, res, next) => 
 /** A rate change returns the placement for approval; only an administrator may do it. */
 placementsRouter.patch('/:id/rates', requireAdmin, async (req, res, next) => {
   try {
-    const id = z.string().uuid().parse(req.params.id);
+    const id = z.guid().parse(req.params.id);
     const b = z.object({
       billRate: z.number().min(0),
       payRate: z.number().min(0),
