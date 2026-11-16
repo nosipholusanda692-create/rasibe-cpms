@@ -69,7 +69,7 @@ retentionRouter.post('/run', requireAdmin, async (req, res, next) => {
 retentionRouter.post('/consultants/:id/anonymise', requireAdmin, async (req, res, next) => {
   try {
     assertCapability(req.actor!.role, 'manage_settings');
-    const id = z.string().uuid().parse(req.params.id);
+    const id = z.guid().parse(req.params.id);
     const b = z.object({
       reason: z.string().trim().min(5, 'Give a reason of at least five characters').max(500),
     }).strict().parse(req.body ?? {});
@@ -92,7 +92,7 @@ retentionRouter.post('/consultants/:id/anonymise', requireAdmin, async (req, res
 retentionRouter.post('/consultants/:id/consent', requireInternal, async (req, res, next) => {
   try {
     assertCapability(req.actor!.role, 'manage_consultants');
-    const id = z.string().uuid().parse(req.params.id);
+    const id = z.guid().parse(req.params.id);
     const b = z.object({
       retainUntil: isoDate.nullable(),
       reason: z.string().trim().min(5, 'Record how the consultant gave their consent (five characters or more)').max(500),

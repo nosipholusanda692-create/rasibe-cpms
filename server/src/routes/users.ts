@@ -106,8 +106,8 @@ const createBody = z.object({
   phone: z.string().optional(),
   role: z.enum(['ADMINISTRATOR', 'RECRUITER', 'CONSULTANT', 'CLIENT_MANAGER']),
   // A consultant account is linked to a pool record; a client manager to a contact.
-  consultantId: z.string().uuid().optional(),
-  contactId: z.string().uuid().optional(),
+  consultantId: z.guid().optional(),
+  contactId: z.guid().optional(),
 }).strict();
 
 /**
@@ -216,7 +216,7 @@ usersRouter.post('/', requireAdmin, async (req, res, next) => {
 usersRouter.post('/:id/invite', requireAdmin, async (req, res, next) => {
   try {
     assertCapability(req.actor!.role, 'manage_users');
-    const id = z.string().uuid().parse(req.params.id);
+    const id = z.guid().parse(req.params.id);
     const body = optionalReason.parse(req.body ?? {});
     const { plain, hash } = newToken();
 
@@ -261,7 +261,7 @@ usersRouter.post('/:id/invite', requireAdmin, async (req, res, next) => {
 usersRouter.post('/:id/status', requireAdmin, async (req, res, next) => {
   try {
     assertCapability(req.actor!.role, 'manage_users');
-    const id = z.string().uuid().parse(req.params.id);
+    const id = z.guid().parse(req.params.id);
     const b = z.object({
       isActive: z.boolean(),
       reason: z.string().min(5, 'Give a reason of at least five characters'),
@@ -304,7 +304,7 @@ usersRouter.post('/:id/status', requireAdmin, async (req, res, next) => {
 usersRouter.post('/:id/role', requireAdmin, async (req, res, next) => {
   try {
     assertCapability(req.actor!.role, 'manage_users');
-    const id = z.string().uuid().parse(req.params.id);
+    const id = z.guid().parse(req.params.id);
     const b = z.object({
       role: z.enum(['ADMINISTRATOR', 'RECRUITER', 'CONSULTANT', 'CLIENT_MANAGER']),
       reason: z.string().min(5, 'Give a reason of at least five characters'),

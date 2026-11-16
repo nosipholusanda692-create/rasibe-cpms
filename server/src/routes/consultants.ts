@@ -26,7 +26,7 @@ consultantsRouter.get('/', requireAuth, async (req, res, next) => {
     const q = z
       .object({
         search: searchText.optional(),
-        skill: z.string().uuid().optional(),
+        skill: z.guid().optional(),
         seniority: z.enum(SENIORITY).optional(),
         availability: z.enum(AVAILABILITY).optional(),
         availableFrom: isoDate.optional(),
@@ -136,7 +136,7 @@ consultantsRouter.get('/', requireAuth, async (req, res, next) => {
 
 consultantsRouter.get('/:id', requireAuth, async (req, res, next) => {
   try {
-    const id = z.string().uuid().parse(req.params.id);
+    const id = z.guid().parse(req.params.id);
 
     if (req.actor!.role === 'CLIENT_MANAGER') {
       const rows = await query(req.actor!,
@@ -251,7 +251,7 @@ consultantsRouter.post('/', requireInternal, async (req, res, next) => {
 
 consultantsRouter.patch('/:id', requireAuth, async (req, res, next) => {
   try {
-    const id = z.string().uuid().parse(req.params.id);
+    const id = z.guid().parse(req.params.id);
 
     // a consultant may maintain their own record, nobody else's (UC-04)
     if (req.actor!.role === 'CONSULTANT') {
@@ -317,7 +317,7 @@ consultantsRouter.patch('/:id', requireAuth, async (req, res, next) => {
 /** Records consent to disclose this consultant to clients (UC-31, BR-012). */
 consultantsRouter.post('/:id/consent', requireInternal, async (req, res, next) => {
   try {
-    const id = z.string().uuid().parse(req.params.id);
+    const id = z.guid().parse(req.params.id);
     const body = optionalReason.parse(req.body ?? {});
     const rows = await withActor(req.actor!, async (c) => {
       const r = await c.query(
@@ -343,10 +343,10 @@ consultantsRouter.post('/:id/consent', requireInternal, async (req, res, next) =
 
 consultantsRouter.put('/:id/skills', requireInternal, async (req, res, next) => {
   try {
-    const id = z.string().uuid().parse(req.params.id);
+    const id = z.guid().parse(req.params.id);
     const body = z.object({
       skills: z.array(z.object({
-        skillId: z.string().uuid(),
+        skillId: z.guid(),
         proficiency: z.enum(['BASIC', 'INTERMEDIATE', 'ADVANCED', 'EXPERT']),
         years: z.number().min(0).optional(),
         lastUsedYear: z.number().optional(),
@@ -384,7 +384,7 @@ consultantsRouter.put('/:id/skills', requireInternal, async (req, res, next) => 
  */
 consultantsRouter.post('/:id/deactivate', requireInternal, async (req, res, next) => {
   try {
-    const id = z.string().uuid().parse(req.params.id);
+    const id = z.guid().parse(req.params.id);
     const b = z
       .object({
         reason: z.string().trim().min(5, 'Give a reason of at least five characters').max(500),

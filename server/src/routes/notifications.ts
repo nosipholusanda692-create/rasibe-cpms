@@ -59,7 +59,7 @@ notificationsRouter.post('/read-all', requireAuth, async (req, res, next) => {
 
 notificationsRouter.post('/:id/read', requireAuth, async (req, res, next) => {
   try {
-    const id = z.string().uuid().parse(req.params.id);
+    const id = z.guid().parse(req.params.id);
     const rows = await query(
       req.actor!,
       `UPDATE notification SET read_at = now()

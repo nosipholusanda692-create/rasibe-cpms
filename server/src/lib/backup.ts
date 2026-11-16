@@ -1,7 +1,8 @@
 import { spawn } from 'node:child_process';
 import { createHash, createHmac } from 'node:crypto';
 import { createReadStream, createWriteStream } from 'node:fs';
-import { mkdir, readdir, readFile, stat, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, unlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import tls from 'node:tls';
 import pg from 'pg';
@@ -252,24 +253,76 @@ export async function restoreBackup(conn: OwnerConnection, manifestPath: string,
     throw new Error(`${manifest.file} does not match its manifest checksum. Nothing was restored.`);
   }
 
-  const admin = client(conn, 'postgres');
-  await admin.connect();
+  // Read before anything is created, so a dump that cannot be read leaves no
+  // empty database behind.
+  const list = await placeRestoreList(conn, await restoreList(conn, dumpPath));
   try {
-    const exists = await admin.query('SELECT 1 FROM pg_database WHERE datname = $1', [target]);
-    if (exists.rowCount) {
-      throw new Error(`Database ${target} already exists. Restore into a new name.`);
+    const admin = client(conn, 'postgres');
+    await admin.connect();
+    try {
+      const exists = await admin.query('SELECT 1 FROM pg_database WHERE datname = $1', [target]);
+      if (exists.rowCount) {
+        throw new Error(`Database ${target} already exists. Restore into a new name.`);
+      }
+      await admin.query(`CREATE DATABASE ${target}`);
+    } finally {
+      await admin.end();
     }
-    await admin.query(`CREATE DATABASE ${target}`);
-  } finally {
-    await admin.end();
-  }
 
-  const restore = await pgTool(conn, 'pg_restore', ['--exit-on-error', '--no-owner'], target);
-  // A pg_restore that fails early closes its input; its exit code reports that.
-  restore.stdin?.on('error', () => undefined);
-  createReadStream(dumpPath).pipe(restore.stdin!);
-  restore.stdout?.resume();
-  await finished(restore, 'pg_restore');
+    const restore = await pgTool(conn, 'pg_restore', ['--exit-on-error', '--no-owner', '-L', list.path], target);
+    // A pg_restore that fails early closes its input; its exit code reports that.
+    restore.stdin?.on('error', () => undefined);
+    createReadStream(dumpPath).pipe(restore.stdin!);
+    restore.stdout?.resume();
+    await finished(restore, 'pg_restore');
+  } finally {
+    await list.remove();
+  }
+}
+
+/**
+ * The archive's contents, less the default privileges. A managed host such as
+ * Neon sets default privileges for its own platform roles (cloud_admin) in
+ * every database, so the dump carries them, and only that role may replay
+ * them: restoring as the database owner stops on the first one with "permission
+ * denied to change default privileges". The new host already has its own. This
+ * project sets none (the grants are explicit, in db/02_security.sql and
+ * setup-database.ts), so nothing of ours is dropped. Every other entry is kept,
+ * and --exit-on-error still stops on any real failure.
+ */
+async function restoreList(conn: OwnerConnection, dumpPath: string): Promise<string> {
+  const lister = await pgTool(conn, 'pg_restore', ['-l'], 'postgres');
+  let contents = '';
+  lister.stdout?.on('data', (chunk: Buffer) => { contents += chunk; });
+  lister.stdin?.on('error', () => undefined);
+  createReadStream(dumpPath).pipe(lister.stdin!);
+  await finished(lister, 'pg_restore -l');
+  return `${contents.split('\n').filter((line) => !line.includes(' DEFAULT ACL ')).join('\n')}\n`;
+}
+
+const CONTAINER_LIST = '/tmp/rasibe-restore.list';
+
+/** Puts the list where pg_restore will run: inside the container, or here. */
+async function placeRestoreList(conn: OwnerConnection, contents: string): Promise<{ path: string; remove: () => Promise<void> }> {
+  if (conn.dockerContainer) {
+    const child = spawn('docker', ['exec', '-i', conn.dockerContainer, 'sh', '-c', `cat > ${CONTAINER_LIST}`], {
+      stdio: ['pipe', 'ignore', 'pipe'],
+    });
+    const done = finished(child, 'docker exec');
+    child.stdin?.end(contents);
+    await done;
+    return {
+      path: CONTAINER_LIST,
+      remove: () => finished(
+        spawn('docker', ['exec', conn.dockerContainer!, 'rm', '-f', CONTAINER_LIST], { stdio: ['ignore', 'ignore', 'pipe'] }),
+        'docker exec',
+      ).catch(() => undefined),
+    };
+  }
+  const dir = await mkdtemp(path.join(tmpdir(), 'rasibe-restore-'));
+  const file = path.join(dir, 'restore.list');
+  await writeFile(file, contents);
+  return { path: file, remove: () => rm(dir, { recursive: true, force: true }) };
 }
 
 export interface VerifyReport {

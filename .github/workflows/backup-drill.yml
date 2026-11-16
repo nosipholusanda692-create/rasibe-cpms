@@ -7,7 +7,10 @@ on:
 
 jobs:
   backup-drill:
-    runs-on: ubuntu-latest
+    # Pinned, not ubuntu-latest: the latest image moved to Ubuntu 26.04, whose
+    # repositories carry no postgresql-client-16, and the client has to match the
+    # service's major version (pg_dump refuses a newer server).
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     services:

@@ -25,9 +25,7 @@ export const isoDate = z
  */
 export const queryBool = (fallback?: boolean) =>
   z
-    .enum(['true', 'false', '1', '0'], {
-      errorMap: () => ({ message: 'Use true or false' }),
-    })
+    .enum(['true', 'false', '1', '0'], { message: 'Use true or false' })
     .optional()
     .transform((v) => (v === undefined ? fallback : v === 'true' || v === '1'));
 
