@@ -154,28 +154,69 @@ requestsRouter.post('/', requireAuth, async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+/**
+ * Where a request may go by hand. Shortlisting and interviewing are not here:
+ * the system moves a request into them when a candidate is submitted, and into
+ * FILLED when a placement is made, so setting them by hand would only let the
+ * status disagree with the submissions beneath it.
+ */
+const REQUEST_MOVES: Record<string, string[]> = {
+  DRAFT: ['OPEN', 'CANCELLED'],
+  OPEN: ['FILLED', 'CANCELLED'],
+  SHORTLISTING: ['FILLED', 'CANCELLED'],
+  INTERVIEWING: ['FILLED', 'CANCELLED'],
+  FILLED: ['OPEN'],
+  CANCELLED: ['OPEN'],
+};
+
 requestsRouter.patch('/:id/status', requireAuth, async (req, res, next) => {
   try {
     const id = z.guid().parse(req.params.id);
-    const b = z.object({
-      status: z.enum(['DRAFT', 'OPEN', 'SHORTLISTING', 'INTERVIEWING', 'FILLED', 'CANCELLED']),
-      reason: z.string().optional(),
-    }).strict().parse(req.body);
+    const parsed = z.object({
+      status: z.enum(['OPEN', 'FILLED', 'CANCELLED']),
+      reason: z.string().trim().max(500, 'Keep the reason under 500 characters').optional(),
+    }).strict().safeParse(req.body);
+    if (!parsed.success) throw badRequest('Check the details you entered', fieldErrors(parsed.error));
+    const b = parsed.data;
 
-    if (b.status === 'CANCELLED' && !b.reason) {
-      throw badRequest('Give a reason for cancelling the request');
-    }
-    const rows = await query<any>(
-      req.actor!,
-      `UPDATE resource_request
-          SET status = $2::request_status_enum,
-              closed_at = CASE WHEN $2 IN ('FILLED','CANCELLED') THEN now() ELSE closed_at END,
-              close_reason = coalesce($3, close_reason)
-        WHERE request_id = $1 RETURNING *`,
-      [id, b.status, b.reason ?? null],
-    );
-    if (!rows.length) throw notFound('Request not found');
-    res.json(rows[0]);
+    const role = req.actor!.role;
+    if (role === 'CONSULTANT') throw forbidden();
+    // A client manager may withdraw their own company's request (the database
+    // limits them to it); filling or reopening is the agency's call.
+    if (role === 'CLIENT_MANAGER' && b.status !== 'CANCELLED') throw forbidden();
+
+    const out = await withActor(req.actor!, async (c) => {
+      const cur = await c.query(
+        `SELECT status FROM resource_request WHERE request_id = $1 FOR UPDATE`, [id]);
+      if (!cur.rows.length) throw notFound('Request not found');
+      const from: string = cur.rows[0].status;
+
+      if (from === b.status) throw conflict(`This request is already ${b.status.toLowerCase()}`);
+      if (!(REQUEST_MOVES[from] ?? []).includes(b.status)) {
+        throw conflict(`A request that is ${from.toLowerCase()} cannot be set to ${b.status.toLowerCase()}`);
+      }
+
+      // Cancelling and reopening change what other people are working on, so
+      // each says why. The same five characters the other reasons need.
+      const needsReason = b.status === 'CANCELLED' || (b.status === 'OPEN' && from !== 'DRAFT');
+      if (needsReason && (b.reason ?? '').length < 5) {
+        throw badRequest('Check the details you entered', {
+          reason: [b.status === 'CANCELLED'
+            ? 'Give a reason for cancelling the request, at least five characters'
+            : 'Give a reason for reopening the request, at least five characters'],
+        });
+      }
+
+      const r = await c.query(
+        `UPDATE resource_request
+            SET status = $2::request_status_enum,
+                closed_at = CASE WHEN $2::request_status_enum IN ('FILLED','CANCELLED') THEN now() ELSE NULL END,
+                close_reason = CASE WHEN $2::request_status_enum = 'CANCELLED' THEN $3::text ELSE NULL END
+          WHERE request_id = $1 RETURNING *`,
+        [id, b.status, b.reason || null]);
+      return r.rows[0];
+    });
+    res.json(project(role, out));
   } catch (e) { next(e); }
 });
 

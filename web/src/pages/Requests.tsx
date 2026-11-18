@@ -254,6 +254,7 @@ export function RequestDetailPage() {
   const [msg, setMsg] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
   const [placing, setPlacing] = useState<any | null>(null);
   const [declining, setDeclining] = useState<{ submissionId: string; outcome: string } | null>(null);
+  const [changing, setChanging] = useState<'CANCELLED' | 'FILLED' | 'OPEN' | null>(null);
 
   const r = useLoad<any>(() => api.get(`/requests/${id}`), [id]);
   const subs = useLoad<any>(() => api.get(`/requests/${id}/submissions`), [id]);
@@ -264,6 +265,25 @@ export function RequestDetailPage() {
   if (r.loading) return <Loading />;
   if (r.error) return <Alert kind="error">{r.error}</Alert>;
   const d = r.data;
+
+  // Filling and reopening are the agency's call; a client manager may withdraw
+  // their own company's request. The server enforces the same, and the moves.
+  const internal = user?.role === 'ADMINISTRATOR' || user?.role === 'RECRUITER';
+  const canClose = (internal || user?.role === 'CLIENT_MANAGER')
+    && ['DRAFT', 'OPEN', 'SHORTLISTING', 'INTERVIEWING'].includes(d.status);
+  const canFill = internal && ['OPEN', 'SHORTLISTING', 'INTERVIEWING'].includes(d.status);
+  const canReopen = internal && ['FILLED', 'CANCELLED'].includes(d.status);
+
+  async function changeStatus(status: 'CANCELLED' | 'FILLED' | 'OPEN', reason?: string) {
+    await api.patch(`/requests/${id}/status`, { status, reason });
+    setChanging(null);
+    setMsg({
+      kind: 'success',
+      text: status === 'CANCELLED' ? 'Request cancelled.'
+        : status === 'FILLED' ? 'Request marked as filled.' : 'Request reopened.',
+    });
+    r.reload();
+  }
 
   async function submitCandidate(consultantId: string) {
     setMsg(null);
@@ -300,7 +320,25 @@ export function RequestDetailPage() {
       {msg && <Alert kind={msg.kind}>{msg.text}</Alert>}
 
       <Card title={d.title} subtitle={`${d.reference} · ${d.client_name}`}
-        action={<Status value={d.status} />}>
+        action={<Status value={d.status} />}
+        footer={(canClose || canFill || canReopen) && (
+          <div className="btn-row">
+            {canFill && (
+              <button className="btn btn-primary" onClick={() => setChanging('FILLED')}>Mark as filled</button>
+            )}
+            {canReopen && (
+              <button className="btn" onClick={() => setChanging('OPEN')}>Reopen request</button>
+            )}
+            {canClose && (
+              <button className="btn btn-danger" onClick={() => setChanging('CANCELLED')}>Cancel request</button>
+            )}
+          </div>
+        )}>
+        {d.status === 'CANCELLED' && d.close_reason && (
+          <div className="card-body">
+            <Alert kind="info">Cancelled{d.closed_at ? ` on ${date(d.closed_at)}` : ''}: {d.close_reason}</Alert>
+          </div>
+        )}
         <div className="card-body">
           <dl className="def-list">
             <div><dt>Seniority</dt><dd>{titleCase(d.seniority)}</dd></div>
@@ -428,6 +466,41 @@ export function RequestDetailPage() {
             )
         )}
       </Card>
+
+      {changing === 'CANCELLED' && (
+        <ReasonModal
+          title="Cancel this request"
+          intent="Recruiters stop working on it and the reason stays on the request. A cancelled request can be reopened by the agency."
+          label="Reason"
+          confirmLabel="Cancel request"
+          danger
+          onClose={() => setChanging(null)}
+          onConfirm={(reason) => changeStatus('CANCELLED', reason)} />
+      )}
+      {changing === 'OPEN' && (
+        <ReasonModal
+          title="Reopen this request"
+          intent={`This request is ${d.status.toLowerCase()}. Reopening puts it back in front of recruiters, so say what changed.`}
+          label="Reason"
+          confirmLabel="Reopen request"
+          onClose={() => setChanging(null)}
+          onConfirm={(reason) => changeStatus('OPEN', reason)} />
+      )}
+      {changing === 'FILLED' && (
+        <Modal title="Mark this request as filled" onClose={() => setChanging(null)}
+          footer={<>
+            <button className="btn" onClick={() => setChanging(null)}>Not yet</button>
+            <button className="btn btn-primary" onClick={() => void changeStatus('FILLED').catch((e) =>
+              { setChanging(null); setMsg({ kind: 'error', text: e instanceof Error ? e.message : 'Could not update the request' }); })}>
+              Mark as filled
+            </button>
+          </>}>
+          <p className="small" style={{ marginTop: 0 }}>
+            Use this when the role has been filled outside the system. Creating a placement
+            from a candidate already does it for you.
+          </p>
+        </Modal>
+      )}
 
       {declining && (
         <ReasonModal
