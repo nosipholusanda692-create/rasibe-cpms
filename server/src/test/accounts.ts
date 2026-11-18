@@ -193,6 +193,80 @@ async function main() {
     check('a client manager account must name a contact', noContact.status === 400);
 
     // ------------------------------------------------------------------
+    section('Contacts at a client company');
+    // ------------------------------------------------------------------
+    // A client manager account is linked to a contact, so a company with no
+    // way to add one could never be given a login.
+    const company = await admin.post('/clients', {
+      legalName: `Contact Test ${Date.now()} (Pty) Ltd`, paymentTermsDays: 30,
+    });
+    check('a company can be added with no contacts', company.status === 201, company.body);
+    const cid = company.body.client_id;
+    const addr = unique('first');
+
+    const firstContact = await recruiter.post(`/clients/${cid}/contacts`, {
+      firstName: '  Thandi ', lastName: 'Mokoena', jobTitle: 'Programme Lead',
+      email: addr.toUpperCase(), phone: '+27 82 555 0101', isTimesheetApprover: true,
+    });
+    check('a recruiter can add a contact', firstContact.status === 201, firstContact.body);
+    check('names are trimmed and the address is stored in lower case',
+      firstContact.body.first_name === 'Thandi' && firstContact.body.email === addr.toLowerCase(), firstContact.body);
+    check('the first contact a company gets is its primary contact',
+      firstContact.body.is_primary === true, firstContact.body.is_primary);
+
+    const secondContact = await admin.post(`/clients/${cid}/contacts`, {
+      firstName: 'Pieter', lastName: 'Venter', email: unique('second'), isPrimary: true,
+    });
+    check('a second contact can be added', secondContact.status === 201, secondContact.body);
+    const roster = await admin.get(`/clients/${cid}`);
+    const primaries = (roster.body.contacts as any[]).filter((c) => c.isPrimary);
+    check('naming a new primary contact moves the flag rather than adding another',
+      roster.body.contacts.length === 2 && primaries.length === 1 && primaries[0].lastName === 'Venter',
+      roster.body.contacts);
+
+    const sameAgain = await admin.post(`/clients/${cid}/contacts`, {
+      firstName: 'Thandi', lastName: 'Mokoena', email: addr,
+    });
+    check('the same address twice at one company is refused, naming the email',
+      sameAgain.status === 409 && sameAgain.body.detail?.email?.length === 1, sameAgain.body);
+
+    const badContacts: Array<[string, unknown]> = [
+      ['no first name', { lastName: 'X', email: unique('x') }],
+      ['no last name', { firstName: 'X', email: unique('x') }],
+      ['no email', { firstName: 'X', lastName: 'Y' }],
+      ['an email that is not one', { firstName: 'X', lastName: 'Y', email: 'not-an-email' }],
+      ['a phone number that is not one', { firstName: 'X', lastName: 'Y', email: unique('x'), phone: 'call me' }],
+      ['a first name over 100 characters', { firstName: 'x'.repeat(101), lastName: 'Y', email: unique('x') }],
+      ['a job title over 120 characters', { firstName: 'X', lastName: 'Y', email: unique('x'), jobTitle: 'x'.repeat(121) }],
+      ['a field that is not a contact field', { firstName: 'X', lastName: 'Y', email: unique('x'), userId: 'x' }],
+    ];
+    for (const [what, body] of badContacts) {
+      const r = await admin.post(`/clients/${cid}/contacts`, body);
+      check(`a contact with ${what} is refused`, r.status === 400, r.body);
+    }
+    check('a contact for a company that does not exist is a 404',
+      (await admin.post('/clients/00000000-0000-4000-8000-000000000000/contacts', {
+        firstName: 'X', lastName: 'Y', email: unique('x'),
+      })).status === 404);
+
+    const clientMgrAdding = new Client();
+    await clientMgrAdding.signIn('s.naidoo@nedgroupit.co.za');
+    check('a client manager cannot add contacts',
+      (await clientMgrAdding.post(`/clients/${cid}/contacts`, {
+        firstName: 'X', lastName: 'Y', email: unique('x'),
+      })).status === 403);
+
+    const offered = await admin.get('/users/linkable');
+    const newContact = (offered.body.contacts as any[]).find((c) => c.email === addr.toLowerCase());
+    check('the new contact is offered when creating a client manager account', newContact !== undefined);
+    if (newContact) {
+      const mgr = await admin.post('/users', {
+        fullName: 'Thandi Mokoena', email: addr.toLowerCase(), role: 'CLIENT_MANAGER', contactId: newContact.contact_id,
+      });
+      check('and an account can be created for them', mgr.status === 201, mgr.body);
+    }
+
+    // ------------------------------------------------------------------
     section('Forgotten password (FR-AUT-005)');
     // ------------------------------------------------------------------
     const forgot = await anon.post('/auth/forgot-password', { email });
