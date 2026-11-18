@@ -343,11 +343,36 @@ invoicesRouter.post('/:id/export', requireAdmin, async (req, res, next) => {
 invoicesRouter.post('/:id/payment', requireAdmin, async (req, res, next) => {
   try {
     const id = z.guid().parse(req.params.id);
-    const b = z.object({ amount: z.number().min(0) }).strict().parse(req.body);
+    const b = z.object({
+      amount: z.number({ message: 'Enter the amount received' })
+        .positive('Enter an amount above zero')
+        .max(1_000_000_000, 'That amount is too large')
+        .refine((v) => Math.abs(v * 100 - Math.round(v * 100)) < 1e-6, 'Use at most two decimal places'),
+      reference: z.string().trim().max(100, 'Keep the reference under 100 characters')
+        .regex(/^[^\u0000-\u001f]*$/, 'Use plain text, on one line').optional(),
+    }).strict().parse(req.body);
     const row = await withActor(req.actor!, async (c) => {
       const cur = await c.query(
-        `SELECT amount_paid, status FROM invoice WHERE invoice_id = $1 FOR UPDATE`, [id]);
+        `SELECT amount_paid, total, status FROM invoice WHERE invoice_id = $1 FOR UPDATE`, [id]);
       if (!cur.rows.length) throw notFound('Invoice not found');
+
+      // A payment belongs to an invoice that has been issued and is not yet
+      // settled. Against a draft or a cancelled one it would sit in the figures
+      // with nothing to show for it, and the status trigger only reacts once an
+      // invoice is issued.
+      if (!['ISSUED', 'OVERDUE', 'PART_PAID'].includes(cur.rows[0].status)) {
+        throw conflict(cur.rows[0].status === 'PAID'
+          ? 'This invoice is already paid in full'
+          : 'A payment can only be recorded against an issued invoice');
+      }
+      // Never more than is owed: an overpayment is a refund or a credit, which
+      // is a decision for a person, not a typing slip.
+      const outstanding = roundMoney(Number(cur.rows[0].total) - Number(cur.rows[0].amount_paid));
+      if (b.amount > outstanding) {
+        throw badRequest('Check the details you entered', {
+          amount: [`The amount is more than the ${outstanding.toFixed(2)} still owing`],
+        });
+      }
       const paid = await c.query(
         `UPDATE invoice SET amount_paid = amount_paid + $2 WHERE invoice_id = $1 RETURNING *`,
         [id, b.amount]);
@@ -357,7 +382,7 @@ invoicesRouter.post('/:id/payment', requireAdmin, async (req, res, next) => {
         entityTable: 'invoice', entityId: id,
         previous: { amountPaid: cur.rows[0].amount_paid, status: cur.rows[0].status },
         next: { amountPaid: paid.rows[0].amount_paid, status: paid.rows[0].status },
-        reason: `Payment of ${b.amount} recorded`,
+        reason: `Payment of ${b.amount.toFixed(2)} recorded${b.reference ? ` (reference ${b.reference})` : ''}`,
       });
       return paid.rows[0];
     });

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link, useParams, useNavigate } from 'react-router-dom';
-import { api, useAuth, useLoad, Card, Status, Loading, Alert, Empty, Field, Modal, ReasonModal, Pager, usePaging, money, hours, date, titleCase } from '../lib';
+import { api, useAuth, useLoad, useFormError, Card, Status, Loading, Alert, Empty, Field, Modal, ReasonModal, Pager, usePaging, money, hours, date, titleCase } from '../lib';
 
 /** Invoice run and list (UC-20, UC-21). */
 export default function Invoices() {
@@ -192,6 +192,7 @@ export function InvoiceDetailPage() {
   const { user } = useAuth();
   const [msg, setMsg] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
   const [crediting, setCrediting] = useState(false);
+  const [paying, setPaying] = useState(false);
   const inv = useLoad<any>(() => api.get(`/invoices/${id}`), [id]);
   const isAdmin = user?.role === 'ADMINISTRATOR';
 
@@ -219,6 +220,8 @@ export function InvoiceDetailPage() {
   if (inv.error) return <Alert kind="error">{inv.error}</Alert>;
   const d = inv.data;
   const issued = ['ISSUED', 'OVERDUE', 'PART_PAID', 'PAID'].includes(d.status);
+  const canPay = ['ISSUED', 'OVERDUE', 'PART_PAID'].includes(d.status);
+  const owing = Math.round((Number(d.total) - Number(d.amount_paid)) * 100) / 100;
 
   return (
     <>
@@ -239,6 +242,11 @@ export function InvoiceDetailPage() {
             {d.status === 'APPROVED' && (
               <button className="btn btn-primary" onClick={() => act('issue', {}, 'Invoice issued and sent to the client.')}>
                 Issue invoice
+              </button>
+            )}
+            {canPay && (
+              <button className="btn btn-primary" onClick={() => setPaying(true)}>
+                Record payment
               </button>
             )}
             {issued && (
@@ -296,8 +304,12 @@ export function InvoiceDetailPage() {
             <tr><td colSpan={4} className="right"><strong>Total</strong></td>
               <td className="num"><strong>{money(d.total)}</strong></td></tr>
             {Number(d.amount_paid) > 0 && (
-              <tr><td colSpan={4} className="right">Paid</td>
-                <td className="num">{money(d.amount_paid)}</td></tr>
+              <>
+                <tr><td colSpan={4} className="right">Paid</td>
+                  <td className="num">{money(d.amount_paid)}</td></tr>
+                <tr><td colSpan={4} className="right"><strong>Still owing</strong></td>
+                  <td className="num"><strong>{money(owing)}</strong></td></tr>
+              </>
             )}
           </tbody>
         </table>
@@ -312,6 +324,19 @@ export function InvoiceDetailPage() {
         )}
       </Card>
 
+      {paying && (
+        <PaymentModal
+          invoiceNumber={d.invoice_number}
+          owing={owing}
+          onClose={() => setPaying(false)}
+          onPaid={(settled) => {
+            setPaying(false);
+            setMsg({ kind: 'success', text: settled ? 'Payment recorded. The invoice is paid in full.' : 'Payment recorded.' });
+            inv.reload();
+          }}
+          invoiceId={String(id)} />
+      )}
+
       {crediting && (
         <ReasonModal
           title="Raise a credit note"
@@ -325,5 +350,67 @@ export function InvoiceDetailPage() {
           }} />
       )}
     </>
+  );
+}
+
+/**
+ * Records money received against an issued invoice (POST /invoices/:id/payment).
+ *
+ * The amount starts at what is still owing, so the common case, a client
+ * paying in full, is one click. The server has the final say: it refuses an
+ * amount above the balance, and moves the invoice to part paid or paid.
+ * Every payment goes into the audit trail with the reference.
+ */
+function PaymentModal({ invoiceId, invoiceNumber, owing, onClose, onPaid }: {
+  invoiceId: string; invoiceNumber: string | null; owing: number;
+  onClose: () => void; onPaid: (settled: boolean) => void;
+}) {
+  const err = useFormError();
+  const [busy, setBusy] = useState(false);
+  const [amount, setAmount] = useState(owing.toFixed(2));
+  const [reference, setReference] = useState('');
+
+  const value = Number(amount);
+  const problem = amount.trim() === '' || Number.isNaN(value) ? 'Enter the amount received'
+    : value <= 0 ? 'Enter an amount above zero'
+    : Math.abs(value * 100 - Math.round(value * 100)) > 1e-6 ? 'Use at most two decimal places'
+    : value > owing ? `That is more than the ${money(owing)} still owing`
+    : undefined;
+
+  async function save() {
+    if (problem) return;
+    setBusy(true); err.clear();
+    try {
+      await api.post(`/invoices/${invoiceId}/payment`, {
+        amount: value,
+        reference: reference.trim() || undefined,
+      });
+      onPaid(Math.round((owing - value) * 100) === 0);
+    } catch (e) { err.capture(e); } finally { setBusy(false); }
+  }
+
+  return (
+    <Modal title="Record payment" onClose={onClose}
+      footer={
+        <div className="btn-row">
+          <button className="btn" onClick={onClose}>Cancel</button>
+          <button className="btn btn-primary" disabled={busy || !!problem} onClick={() => void save()}>
+            {busy ? 'Recording…' : 'Record payment'}
+          </button>
+        </div>
+      }>
+      <p className="small" style={{ marginTop: 0 }}>
+        {invoiceNumber ?? 'This invoice'} has {money(owing)} still owing. A payment cannot be
+        undone from here, and it is written to the audit trail.
+      </p>
+      {err.error && <Alert kind="error">{err.error}</Alert>}
+      <Field label="Amount received" required error={problem ?? err.fieldError('amount')}>
+        <input type="text" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} />
+      </Field>
+      <Field label="Bank reference" hint="Optional. For example the EFT reference on the statement."
+        error={err.fieldError('reference')}>
+        <input type="text" maxLength={100} value={reference} onChange={(e) => setReference(e.target.value)} />
+      </Field>
+    </Modal>
   );
 }

@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react';
 import QRCode from 'qrcode';
 import { api, useAuth, useFormError, Card, Alert, Field } from '../lib';
+import { passwordChecks } from '../validation';
 
 /**
- * Two-factor authentication for the signed-in person (docs/TWO-FACTOR.md).
+ * Sign-in security for the signed-in person: change password, then two-factor
+ * authentication (docs/TWO-FACTOR.md).
  *
  * Off: password, then scan the QR code, then confirm with a code, then save the
  * recovery codes. On: turning it off needs the password and a current code.
@@ -22,10 +24,75 @@ export default function Security() {
       )}
       {done && <Alert kind="success">{done}</Alert>}
 
+      <ChangePassword onDone={() => setDone('Your password has been changed. Every other device has been signed out.')} />
+
       {twoFactor.enabled
         ? <TurnOff onDone={() => setDone('Two-factor authentication is off.')} />
         : <TurnOn onDone={() => setDone('Two-factor authentication is on. You will be asked for a code each time you sign in.')} />}
     </>
+  );
+}
+
+/**
+ * Change the password while signed in (POST /auth/change-password).
+ *
+ * The server checks the current password, the strength rule and the breached
+ * password list, then signs every other session out. The checklist below only
+ * mirrors the rule so people see it before they press the button.
+ */
+function ChangePassword({ onDone }: { onDone: () => void }) {
+  const err = useFormError();
+  const [busy, setBusy] = useState(false);
+  const [current, setCurrent] = useState('');
+  const [next, setNext] = useState('');
+  const [again, setAgain] = useState('');
+
+  const checks = passwordChecks(next);
+  const strong = checks.every((c) => c.ok);
+  const mismatch = again.length > 0 && next !== again;
+  const same = next.length > 0 && next === current;
+  const ready = !!current && strong && next === again && !same;
+
+  async function save() {
+    setBusy(true); err.clear();
+    try {
+      await api.post('/auth/change-password', { currentPassword: current, newPassword: next });
+      setCurrent(''); setNext(''); setAgain('');
+      onDone();
+    } catch (e) { err.capture(e); } finally { setBusy(false); }
+  }
+
+  return (
+    <Card title="Change password" subtitle="Signs you out of every other device"
+      footer={
+        <button className="btn btn-primary" disabled={busy || !ready} onClick={() => void save()}>
+          {busy ? 'Changing…' : 'Change password'}
+        </button>
+      }>
+      <div className="card-body">
+        {err.error && <Alert kind="error">{err.error}</Alert>}
+        <Field label="Your current password" required error={err.fieldError('currentPassword')}>
+          <input type="password" autoComplete="current-password" value={current}
+            onChange={(e) => setCurrent(e.target.value)} />
+        </Field>
+        <Field label="New password" required error={err.fieldError('newPassword')}>
+          <input type="password" autoComplete="new-password" value={next}
+            onChange={(e) => setNext(e.target.value)} />
+        </Field>
+        <ul className="small" style={{ margin: '0 0 12px', paddingLeft: 18 }}>
+          {checks.map((c) => (
+            <li key={c.text} style={{ color: c.ok ? 'var(--green, #1a7f37)' : undefined }}>
+              {c.ok ? '✓' : '•'} {c.text}
+            </li>
+          ))}
+        </ul>
+        <Field label="Confirm new password" required
+          error={mismatch ? 'The two do not match' : same ? 'The new password must differ from the current one' : undefined}>
+          <input type="password" autoComplete="new-password" value={again}
+            onChange={(e) => setAgain(e.target.value)} />
+        </Field>
+      </div>
+    </Card>
   );
 }
 

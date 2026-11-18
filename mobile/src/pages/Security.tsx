@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import QRCode from 'qrcode';
 import { api, ApiError, useAuth, Banner } from '../lib';
+import { passwordChecks } from '../validation';
 
 /**
  * Two-factor authentication on the phone (docs/TWO-FACTOR.md).
@@ -47,10 +48,74 @@ export default function Security() {
 
       {done && <Banner kind="ok">{done}</Banner>}
 
+      <ChangePassword onDone={() => setDone('Your password has been changed. Every other device has been signed out.')} />
+
       {twoFactor.enabled
         ? <TurnOff onDone={() => setDone('Two-factor authentication is off.')} />
         : <TurnOn onDone={() => setDone('Two-factor authentication is on. You will be asked for a code each time you sign in.')} />}
     </div>
+  );
+}
+
+/** Change the password while signed in (POST /auth/change-password). Needs a connection. */
+function ChangePassword({ onDone }: { onDone: () => void }) {
+  const err = useFormError();
+  const [busy, setBusy] = useState(false);
+  const [current, setCurrent] = useState('');
+  const [next, setNext] = useState('');
+  const [again, setAgain] = useState('');
+
+  const checks = passwordChecks(next);
+  const strong = checks.every((c) => c.ok);
+  const mismatch = again.length > 0 && next !== again;
+  const same = next.length > 0 && next === current;
+  const ready = !!current && strong && next === again && !same;
+
+  async function save() {
+    setBusy(true); err.clear();
+    try {
+      await api.post('/auth/change-password', { currentPassword: current, newPassword: next });
+      setCurrent(''); setNext(''); setAgain('');
+      onDone();
+    } catch (e) { err.capture(e); } finally { setBusy(false); }
+  }
+
+  return (
+    <section className="card">
+      <div className="card-head">
+        <div>
+          <h2>Change password</h2>
+          <div className="sub">Signs you out of every other device</div>
+        </div>
+      </div>
+      <div className="card-body">
+        {err.message && <Banner kind="error">{err.message}</Banner>}
+        <div className="field">
+          <label>Your current password</label>
+          <input type="password" autoComplete="current-password" value={current}
+            onChange={(e) => setCurrent(e.target.value)} />
+          {err.field('currentPassword') && <div className="field-error">{err.field('currentPassword')}</div>}
+        </div>
+        <div className="field">
+          <label>New password</label>
+          <input type="password" autoComplete="new-password" value={next}
+            onChange={(e) => setNext(e.target.value)} />
+          {err.field('newPassword') && <div className="field-error">{err.field('newPassword')}</div>}
+        </div>
+        <ul className="small muted" style={{ margin: '0 0 12px', paddingLeft: 18 }}>
+          {checks.map((c) => <li key={c.text}>{c.ok ? '✓' : '•'} {c.text}</li>)}
+        </ul>
+        <div className="field">
+          <label>Confirm new password</label>
+          <input type="password" autoComplete="new-password" value={again}
+            onChange={(e) => setAgain(e.target.value)} />
+          {mismatch && <div className="field-error">The two do not match</div>}
+          {!mismatch && same && <div className="field-error">The new password must differ from the current one</div>}
+        </div>
+        <button className="btn btn-primary btn-block" disabled={busy || !ready}
+          onClick={() => void save()}>{busy ? 'Changing…' : 'Change password'}</button>
+      </div>
+    </section>
   );
 }
 

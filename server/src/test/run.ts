@@ -1823,6 +1823,50 @@ async function main() {
     check('only an administrator may record a payment',
       (await recruiter.post(`/invoices/${invId}/payment`, { amount: 1 })).status === 403);
 
+    // What a payment may and may not be. The record-payment screen relies on
+    // these: it shows the balance, but the server is the one that refuses.
+    const payRefused: Array<[string, unknown]> = [
+      ['nothing', { amount: 0 }],
+      ['less than nothing', { amount: -5 }],
+      ['a fraction of a cent', { amount: 1.234 }],
+      ['text instead of a number', { amount: '10' }],
+      ['no amount at all', {}],
+      ['an amount with a status smuggled in', { amount: 1, status: 'PAID' }],
+      ['a reference with a line break', { amount: 1, reference: 'one\ntwo' }],
+    ];
+    for (const [what, body] of payRefused) {
+      const r = await admin.post(`/invoices/${invId}/payment`, body);
+      check(`a payment of ${what} is refused`, r.status === 400, r.body);
+    }
+
+    const owing = await admin.get(`/invoices/${invId}`);
+    const balance = Math.round((Number(owing.body.total) - Number(owing.body.amount_paid)) * 100) / 100;
+    check('part payment leaves the invoice part paid', owing.body.status === 'PART_PAID', owing.body.status);
+
+    const over = await admin.post(`/invoices/${invId}/payment`, { amount: balance + 0.01 });
+    check('a payment above what is owing is refused, naming the amount',
+      over.status === 400 && over.body.detail?.amount?.length === 1, over.body);
+
+    const withRef = await admin.post(`/invoices/${invId}/payment`, { amount: 1, reference: 'EFT 4471' });
+    check('a payment can carry a bank reference', withRef.status === 200, withRef.body);
+    const refAudit = await admin.get(`/reports/audit?entityTable=invoice&entityId=${invId}`);
+    check('and the reference is kept in the audit trail',
+      (refAudit.body.items as any[]).some((x) => x.action === 'PAYMENT_RECORDED' && String(x.reason).includes('EFT 4471')),
+      (refAudit.body.items as any[]).map((x) => x.reason));
+
+    const exact = await admin.post(`/invoices/${invId}/payment`, { amount: balance - 1 });
+    check('paying exactly what is left settles the invoice',
+      exact.status === 200 && exact.body.status === 'PAID', exact.body);
+    const settledAgain = await admin.post(`/invoices/${invId}/payment`, { amount: 0.01 });
+    check('a paid invoice takes no further payment', settledAgain.status === 409, settledAgain.body);
+
+    const drafts = await admin.get('/invoices?status=DRAFT');
+    const draft = (drafts.body.items as any[])[0];
+    if (draft) {
+      check('a draft invoice takes no payment',
+        (await admin.post(`/invoices/${draft.invoice_id}/payment`, { amount: 1 })).status === 409);
+    }
+
     // ------------------------------------------------------------------
     section('Database faults do not end the process');
 
