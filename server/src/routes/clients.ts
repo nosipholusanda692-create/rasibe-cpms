@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { query, withActor } from '../lib/db.js';
-import { badRequest, notFound, project, assertCapability } from '../lib/errors.js';
+import { badRequest, notFound, conflict, project, assertCapability } from '../lib/errors.js';
 import { requireAuth, requireInternal } from '../middleware/auth.js';
 import { searchText, fieldErrors } from '../lib/validation.js';
 
@@ -85,24 +85,64 @@ clientsRouter.post('/', requireInternal, async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+/**
+ * A contact at a client company. This is who a client-manager account is
+ * linked to (the user form offers contacts that have no account yet), so a
+ * client added without one can never be given a login.
+ *
+ * Lengths match the columns. A company has one primary contact: naming a new
+ * one moves the flag, and the first contact a company gets is the primary
+ * whether or not it was asked for.
+ */
+const contactBody = z.object({
+  firstName: z.string().trim().min(1, 'Enter a first name').max(100, 'Keep the first name under 100 characters'),
+  lastName: z.string().trim().min(1, 'Enter a last name').max(100, 'Keep the last name under 100 characters'),
+  jobTitle: z.string().trim().max(120, 'Keep the job title under 120 characters').optional(),
+  email: z.string().trim().toLowerCase().max(255, 'That email address is too long')
+    .email('Enter a valid email address'),
+  phone: z.string().trim().regex(/^[0-9+\s()-]{6,20}$/, 'Enter a valid phone number').optional(),
+  isTimesheetApprover: z.boolean().default(false),
+  isPrimary: z.boolean().default(false),
+}).strict();
+
 clientsRouter.post('/:id/contacts', requireInternal, async (req, res, next) => {
   try {
+    assertCapability(req.actor!.role, 'manage_clients');
     const id = z.guid().parse(req.params.id);
-    const b = z.object({
-      firstName: z.string().min(1), lastName: z.string().min(1),
-      jobTitle: z.string().optional(), email: z.string().email(),
-      phone: z.string().optional(),
-      isTimesheetApprover: z.boolean().default(false),
-      isPrimary: z.boolean().default(false),
-    }).strict().parse(req.body);
-    const rows = await query<any>(
-      req.actor!,
-      `INSERT INTO client_contact (client_id, first_name, last_name, job_title, email, phone,
-                                   is_timesheet_approver, is_primary)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
-      [id, b.firstName, b.lastName, b.jobTitle ?? null, b.email, b.phone ?? null,
-       b.isTimesheetApprover, b.isPrimary],
-    );
-    res.status(201).json(rows[0]);
+    const parsed = contactBody.safeParse(req.body);
+    if (!parsed.success) throw badRequest('Check the details you entered', fieldErrors(parsed.error));
+    const b = parsed.data;
+
+    const created = await withActor(req.actor!, async (c) => {
+      const company = await c.query(`SELECT client_id FROM client_company WHERE client_id = $1 FOR UPDATE`, [id]);
+      if (!company.rows.length) throw notFound('Client not found');
+
+      // The table is unique on company and address, retired contacts included,
+      // so say so rather than let a constraint name reach the screen.
+      const same = await c.query(
+        `SELECT is_active FROM client_contact WHERE client_id = $1 AND email = $2`, [id, b.email]);
+      if (same.rows.length) {
+        throw conflict('Check the details you entered', {
+          email: [same.rows[0].is_active
+            ? 'This company already has a contact with that email address'
+            : 'A former contact at this company used that email address'],
+        });
+      }
+
+      const live = await c.query(
+        `SELECT count(*)::int AS n FROM client_contact WHERE client_id = $1 AND is_active`, [id]);
+      const primary = b.isPrimary || live.rows[0].n === 0;
+      if (primary) {
+        await c.query(`UPDATE client_contact SET is_primary = false WHERE client_id = $1 AND is_primary`, [id]);
+      }
+      const r = await c.query(
+        `INSERT INTO client_contact (client_id, first_name, last_name, job_title, email, phone,
+                                     is_timesheet_approver, is_primary)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+        [id, b.firstName, b.lastName, b.jobTitle || null, b.email, b.phone || null,
+         b.isTimesheetApprover, primary]);
+      return r.rows[0];
+    });
+    res.status(201).json(created);
   } catch (e) { next(e); }
 });
