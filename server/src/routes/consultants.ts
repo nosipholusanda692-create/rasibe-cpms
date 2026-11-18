@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { query, withActor } from '../lib/db.js';
 import { retentionMonths } from '../lib/retention.js';
-import { badRequest, notFound, forbidden, project, assertCapability } from '../lib/errors.js';
+import { badRequest, notFound, conflict, forbidden, project, assertCapability } from '../lib/errors.js';
 import { requireAuth, requireInternal } from '../middleware/auth.js';
 import { paged, MAX_PAGE_SIZE, DEFAULT_PAGE_SIZE } from '../lib/paging.js';
 import { audit } from '../services/notify.js';
@@ -341,20 +341,65 @@ consultantsRouter.post('/:id/consent', requireInternal, async (req, res, next) =
   }
 });
 
+/**
+ * Replaces a consultant's skills with the list sent (the profile's skills
+ * editor). It is a replacement, not an addition, so the screen sends the whole
+ * list; the delete and the inserts are one transaction, so a refused list
+ * leaves the old one untouched.
+ *
+ * A retired skill may stay on a consultant who already has it, but cannot be
+ * given to anyone else: it is out of the vocabulary for new matching.
+ */
+const MAX_SKILLS = 40;
+const consultantSkillsBody = z.object({
+  skills: z.array(z.object({
+    skillId: z.guid(),
+    proficiency: z.enum(['BASIC', 'INTERMEDIATE', 'ADVANCED', 'EXPERT']),
+    years: z.number().min(0, 'Years cannot be negative').max(60, 'Years cannot be more than 60').optional(),
+    lastUsedYear: z.number().int('Use a four-digit year').min(1970, 'Use a four-digit year').optional(),
+    isPrimary: z.boolean().optional(),
+  }).strict()).max(MAX_SKILLS, `A consultant can have at most ${MAX_SKILLS} skills`),
+}).strict();
+
 consultantsRouter.put('/:id/skills', requireInternal, async (req, res, next) => {
   try {
+    assertCapability(req.actor!.role, 'manage_consultants');
     const id = z.guid().parse(req.params.id);
-    const body = z.object({
-      skills: z.array(z.object({
-        skillId: z.guid(),
-        proficiency: z.enum(['BASIC', 'INTERMEDIATE', 'ADVANCED', 'EXPERT']),
-        years: z.number().min(0).optional(),
-        lastUsedYear: z.number().optional(),
-        isPrimary: z.boolean().optional(),
-      }).strict()),
-    }).strict().parse(req.body);
+    const parsed = consultantSkillsBody.safeParse(req.body);
+    if (!parsed.success) throw badRequest('Check the details you entered', fieldErrors(parsed.error));
+    const body = parsed.data;
+
+    const ids = body.skills.map((s) => s.skillId);
+    if (new Set(ids).size !== ids.length) {
+      throw badRequest('Check the details you entered', { skills: ['A skill can only be listed once'] });
+    }
+    const thisYear = new Date().getFullYear();
+    if (body.skills.some((s) => s.lastUsedYear !== undefined && s.lastUsedYear > thisYear)) {
+      throw badRequest('Check the details you entered', { skills: [`The year last used cannot be after ${thisYear}`] });
+    }
 
     const rows = await withActor(req.actor!, async (c) => {
+      const who = await c.query(
+        `SELECT is_active, is_anonymised FROM consultant WHERE consultant_id = $1 FOR UPDATE`, [id]);
+      if (!who.rows.length) throw notFound('Consultant not found');
+      if (who.rows[0].is_anonymised) throw conflict('An anonymised consultant has no skills to maintain');
+
+      if (ids.length) {
+        const known = await c.query(
+          `SELECT s.skill_id, s.is_active,
+                  EXISTS (SELECT 1 FROM consultant_skill cs
+                           WHERE cs.consultant_id = $2 AND cs.skill_id = s.skill_id) AS already_held
+             FROM skill s WHERE s.skill_id = ANY($1::uuid[])`, [ids, id]);
+        const byId = new Map(known.rows.map((r: any) => [r.skill_id, r]));
+        if (ids.some((x) => !byId.has(x))) {
+          throw badRequest('Check the details you entered', { skills: ['One of those skills does not exist'] });
+        }
+        const retired = known.rows.filter((r: any) => !r.is_active && !r.already_held);
+        if (retired.length) {
+          throw badRequest('Check the details you entered', { skills: ['A retired skill cannot be given to a consultant'] });
+        }
+      }
+
       await c.query(`DELETE FROM consultant_skill WHERE consultant_id = $1`, [id]);
       for (const s of body.skills) {
         await c.query(
