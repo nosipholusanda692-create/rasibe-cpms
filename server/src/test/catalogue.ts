@@ -307,6 +307,69 @@ async function main() {
     } else {
       check('a deactivated consultant cannot be submitted to a client (BR-017)', true);
     }
+
+    // ------------------------------------------------------------------
+    section('Closing and reopening a request');
+    // ------------------------------------------------------------------
+    // A request could be raised and never closed from the screens. These are
+    // the calls the request page now makes, and the moves it must not allow.
+    const ownCompany = (await clientMgr.get('/clients')).body.items[0].client_id;
+    // Raised by the recruiter, on the client's behalf (FR-REQ-001). A client
+    // manager raising their own is not used here: see the note in TODO-LOYISO.md
+    // on request references.
+    const raised = await recruiter.post('/requests', { clientId: ownCompany, title: 'Status change test role' });
+    check('a recruiter raises a request on a client\'s behalf', raised.status === 201, raised.body);
+    const rid = raised.body.request_id;
+    const move = (who: Client, status: string, reason?: string) =>
+      who.patch(`/requests/${rid}/status`, reason === undefined ? { status } : { status, reason });
+
+    check('a consultant cannot change a request', (await move(consultant, 'CANCELLED', 'Not allowed to')).status === 403);
+    for (const bad of ['SHORTLISTING', 'INTERVIEWING', 'DRAFT', 'NONSENSE']) {
+      check(`a request cannot be set to ${bad} by hand`, (await move(recruiter, bad)).status === 400);
+    }
+    check('an unknown field is refused',
+      (await recruiter.patch(`/requests/${rid}/status`, { status: 'FILLED', closedAt: '2020-01-01' })).status === 400);
+
+    const noCancelReason = await move(clientMgr, 'CANCELLED');
+    check('cancelling needs a reason, named against the reason field',
+      noCancelReason.status === 400 && noCancelReason.body.detail?.reason?.length === 1, noCancelReason.body);
+    check('a reason of a few letters is not enough', (await move(clientMgr, 'CANCELLED', 'no')).status === 400);
+    check('and nothing changed', (await recruiter.get(`/requests/${rid}`)).body.status === 'OPEN');
+
+    check('a client manager cannot mark a request filled', (await move(clientMgr, 'FILLED')).status === 403);
+    check('a client manager cannot reopen a request', (await move(clientMgr, 'OPEN', 'Please reopen it')).status === 403);
+
+    const filled = await move(recruiter, 'FILLED');
+    check('a recruiter can mark an open request filled', filled.status === 200 && filled.body.status === 'FILLED', filled.body);
+    check('and the closing time is recorded', !!filled.body.closed_at, filled.body.closed_at);
+    check('filling it again is a 409, not a silent success', (await move(recruiter, 'FILLED')).status === 409);
+    check('a filled request cannot be cancelled', (await move(recruiter, 'CANCELLED', 'Changed our mind')).status === 409);
+
+    check('reopening needs a reason too', (await move(recruiter, 'OPEN')).status === 400);
+    const reopened = await move(recruiter, 'OPEN', 'The placement fell through');
+    check('a recruiter can reopen a filled request',
+      reopened.status === 200 && reopened.body.status === 'OPEN', reopened.body);
+    check('and it is no longer marked as closed', reopened.body.closed_at === null, reopened.body.closed_at);
+
+    const cancelled = await move(clientMgr, 'CANCELLED', 'The budget was withdrawn');
+    check('a client manager can cancel their own request, with a reason',
+      cancelled.status === 200 && cancelled.body.status === 'CANCELLED', cancelled.body);
+    check('the reason is kept on the request', cancelled.body.close_reason === 'The budget was withdrawn', cancelled.body.close_reason);
+
+    const revived = await move(admin, 'OPEN', 'The client has a new budget');
+    check('an administrator can reopen a cancelled request',
+      revived.status === 200 && revived.body.status === 'OPEN' && revived.body.close_reason === null, revived.body);
+
+    const everyRequest = await recruiter.get('/requests?pageSize=100');
+    const elsewhere = (everyRequest.body.items as any[]).find((x) => x.client_id !== ownCompany);
+    if (elsewhere) {
+      check("a client manager cannot cancel another company's request",
+        (await clientMgr.patch(`/requests/${elsewhere.request_id}/status`,
+          { status: 'CANCELLED', reason: 'Not mine to cancel' })).status === 404);
+    }
+    check('a request that does not exist is a 404',
+      (await recruiter.patch('/requests/00000000-0000-4000-8000-000000000000/status',
+        { status: 'FILLED' })).status === 404);
   } finally {
     server.close();
     await closePool();
