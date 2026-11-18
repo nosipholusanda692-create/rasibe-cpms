@@ -302,6 +302,7 @@ export function ConsultantProfileInner({ id }: { id: string }) {
   const c = useLoad<any>(() => api.get(`/consultants/${id}`), [id]);
   const [msg, setMsg] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
+  const [editingSkills, setEditingSkills] = useState(false);
   const [deactivating, setDeactivating] = useState(false);
 
   if (c.loading) return <Loading />;
@@ -413,6 +414,19 @@ export function ConsultantProfileInner({ id }: { id: string }) {
 
           {tab === 'skills' && (
             <>
+              {can('manage_consultants') && d.is_active !== false && (
+                <div className="row" style={{ marginBottom: 12 }}>
+                  <span className="muted small">
+                    {(d.skills ?? []).length
+                      ? 'These are matched against client requests.'
+                      : 'No skills recorded yet, so this consultant will not match any request.'}
+                  </span>
+                  <div className="spacer" />
+                  <button className="btn btn-sm btn-primary" onClick={() => setEditingSkills(true)}>
+                    Edit skills
+                  </button>
+                </div>
+              )}
               <table>
                 <thead><tr><th>Skill</th><th>Proficiency</th>
                   <th className="num">Years</th><th className="num">Last used</th></tr></thead>
@@ -502,6 +516,14 @@ export function ConsultantProfileInner({ id }: { id: string }) {
           )}
         </div>
       </Card>
+
+      {editingSkills && (
+        <EditSkills
+          consultantId={id}
+          held={d.skills ?? []}
+          onClose={() => setEditingSkills(false)}
+          onSaved={() => { setEditingSkills(false); setMsg('Skills updated.'); c.reload(); }} />
+      )}
 
       {editing && (
         <EditConsultant
@@ -743,6 +765,140 @@ function SkillForm({
           changes it everywhere, which is the point: the taxonomy is one vocabulary.
         </Alert>
       )}
+    </Modal>
+  );
+}
+
+/**
+ * The skills a consultant has, with how well and for how long
+ * (PUT /consultants/:id/skills).
+ *
+ * The server replaces the whole list, so this holds the full list and sends it
+ * back. Skills come from the maintained vocabulary; there is no free text.
+ * A retired skill a consultant already holds can stay or be removed, but not be
+ * added to anyone else.
+ */
+type SkillRow = { skillId: string; name: string; proficiency: string; years: string; lastUsedYear: string; isPrimary: boolean; retired?: boolean };
+const PROFICIENCIES = ['BASIC', 'INTERMEDIATE', 'ADVANCED', 'EXPERT'];
+
+function EditSkills({ consultantId, held, onClose, onSaved }: {
+  consultantId: string; held: any[]; onClose: () => void; onSaved: () => void;
+}) {
+  const err = useFormError();
+  const [busy, setBusy] = useState(false);
+  const vocabulary = useLoad<any>(() => api.get('/skills'));
+  const [rows, setRows] = useState<SkillRow[]>(() => held.map((s) => ({
+    skillId: s.skillId, name: s.name, proficiency: s.proficiency,
+    years: s.years === null || s.years === undefined ? '' : String(s.years),
+    lastUsedYear: s.lastUsedYear ? String(s.lastUsedYear) : '',
+    isPrimary: !!s.isPrimary,
+  })));
+  const [pick, setPick] = useState('');
+  const thisYear = new Date().getFullYear();
+
+  const available = (vocabulary.data?.items ?? []).filter((s: any) => !rows.some((r) => r.skillId === s.skill_id));
+
+  function change(skillId: string, patch: Partial<SkillRow>) {
+    setRows((all) => all.map((r) => (r.skillId === skillId ? { ...r, ...patch } : r)));
+  }
+  function add() {
+    const s = (vocabulary.data?.items ?? []).find((x: any) => x.skill_id === pick);
+    if (!s) return;
+    setRows((all) => [...all, { skillId: s.skill_id, name: s.name, proficiency: 'INTERMEDIATE', years: '', lastUsedYear: '', isPrimary: false }]);
+    setPick('');
+  }
+
+  const problem = (r: SkillRow): string | undefined => {
+    if (r.years !== '' && (Number.isNaN(Number(r.years)) || Number(r.years) < 0 || Number(r.years) > 60)) {
+      return 'Years must be between 0 and 60';
+    }
+    if (r.lastUsedYear !== '' && (!/^\d{4}$/.test(r.lastUsedYear) || Number(r.lastUsedYear) < 1970 || Number(r.lastUsedYear) > thisYear)) {
+      return `Last used must be a year between 1970 and ${thisYear}`;
+    }
+    return undefined;
+  };
+  const anyProblem = rows.some((r) => problem(r));
+
+  async function save() {
+    if (anyProblem) return;
+    setBusy(true); err.clear();
+    try {
+      await api.put(`/consultants/${consultantId}/skills`, {
+        skills: rows.map((r) => ({
+          skillId: r.skillId,
+          proficiency: r.proficiency,
+          years: r.years === '' ? undefined : Number(r.years),
+          lastUsedYear: r.lastUsedYear === '' ? undefined : Number(r.lastUsedYear),
+          isPrimary: r.isPrimary,
+        })),
+      });
+      onSaved();
+    } catch (e) { err.capture(e); } finally { setBusy(false); }
+  }
+
+  return (
+    <Modal title="Edit skills" onClose={onClose}
+      footer={<>
+        <button className="btn" onClick={onClose}>Cancel</button>
+        <button className="btn btn-primary" onClick={save} disabled={busy || anyProblem}>
+          {busy ? 'Saving…' : 'Save skills'}
+        </button>
+      </>}>
+      {err.error && <Alert kind="error">{err.error}{err.fieldError('skills') ? `: ${err.fieldError('skills')}` : ''}</Alert>}
+
+      {rows.length === 0 ? <Empty message="No skills yet. Add one below." /> : (
+        <table>
+          <thead><tr><th>Skill</th><th>Proficiency</th><th className="num">Years</th>
+            <th className="num">Last used</th><th>Primary</th><th /></tr></thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.skillId}>
+                <td>
+                  <strong>{r.name}</strong>
+                  {problem(r) && <div className="field-error">{problem(r)}</div>}
+                </td>
+                <td>
+                  <select value={r.proficiency} onChange={(e) => change(r.skillId, { proficiency: e.target.value })}>
+                    {PROFICIENCIES.map((p) => <option key={p} value={p}>{titleCase(p)}</option>)}
+                  </select>
+                </td>
+                <td className="num">
+                  <input type="text" inputMode="decimal" style={{ width: 64 }} value={r.years}
+                    aria-label={`Years of ${r.name}`} onChange={(e) => change(r.skillId, { years: e.target.value })} />
+                </td>
+                <td className="num">
+                  <input type="text" inputMode="numeric" maxLength={4} style={{ width: 72 }} value={r.lastUsedYear}
+                    placeholder={String(thisYear)} aria-label={`Year ${r.name} was last used`}
+                    onChange={(e) => change(r.skillId, { lastUsedYear: e.target.value })} />
+                </td>
+                <td>
+                  <input type="checkbox" checked={r.isPrimary} aria-label={`${r.name} is a primary skill`}
+                    onChange={(e) => change(r.skillId, { isPrimary: e.target.checked })} />
+                </td>
+                <td className="right">
+                  <button className="btn btn-sm" onClick={() => setRows((all) => all.filter((x) => x.skillId !== r.skillId))}>
+                    Remove
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      <div className="row" style={{ marginTop: 14, gap: 8 }}>
+        <select value={pick} onChange={(e) => setPick(e.target.value)} aria-label="Skill to add"
+          disabled={vocabulary.loading || !available.length}>
+          <option value="">{vocabulary.loading ? 'Loading skills…' : available.length ? 'Choose a skill to add…' : 'Every skill is already listed'}</option>
+          {available.map((s: any) => (
+            <option key={s.skill_id} value={s.skill_id}>{s.name}{s.category ? ` · ${s.category}` : ''}</option>
+          ))}
+        </select>
+        <button className="btn btn-sm" onClick={add} disabled={!pick}>Add</button>
+      </div>
+      <p className="small muted" style={{ marginBottom: 0 }}>
+        Skills come from the shared list, so requests can match on them. A missing skill is added under Skills.
+      </p>
     </Modal>
   );
 }

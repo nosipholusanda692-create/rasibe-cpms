@@ -66,6 +66,7 @@ class Client {
   get = (p: string) => this.call('GET', p);
   post = (p: string, b?: unknown) => this.call('POST', p, b);
   patch = (p: string, b?: unknown) => this.call('PATCH', p, b);
+  put = (p: string, b?: unknown) => this.call('PUT', p, b);
 
   async signIn(email: string, password = 'Password123!') {
     await this.get('/auth/me');
@@ -370,6 +371,104 @@ async function main() {
     check('a request that does not exist is a 404',
       (await recruiter.patch('/requests/00000000-0000-4000-8000-000000000000/status',
         { status: 'FILLED' })).status === 404);
+
+    // ------------------------------------------------------------------
+    section('Maintaining a consultant\'s skills');
+    // ------------------------------------------------------------------
+    // The profile's skills editor sends the whole list; the server replaces it.
+    const skillTarget = await recruiter.post('/consultants', {
+      fullName: 'Skills Test', email: `skills.${Date.now()}@example.co.za`,
+      seniority: 'INTERMEDIATE', availability: 'AVAILABLE',
+    });
+    check('a consultant can be added for the skills test', skillTarget.status === 201, skillTarget.body);
+    const sid = skillTarget.body.consultant_id;
+    const skillsUrl = `/consultants/${sid}/skills`;
+    const vocab = (await recruiter.get('/skills')).body.items;
+    check('there are skills to choose from', vocab.length >= 3, vocab.length);
+    const [s1, s2, s3] = vocab;
+    const heldNow = async () => (await admin.get(`/consultants/${sid}`)).body.skills ?? [];
+
+    const first = await recruiter.put(skillsUrl, { skills: [
+      { skillId: s1.skill_id, proficiency: 'EXPERT', years: 6.5, lastUsedYear: 2024, isPrimary: true },
+      { skillId: s2.skill_id, proficiency: 'BASIC' },
+    ] });
+    check('skills can be assigned', first.status === 200, first.body);
+    let held = await heldNow();
+    check('both skills are on the profile', held.length === 2, held.length);
+    const h1 = held.find((s: any) => s.skillId === s1.skill_id);
+    check('proficiency, years, last used and primary are kept',
+      h1?.proficiency === 'EXPERT' && Number(h1?.years) === 6.5 && h1?.lastUsedYear === 2024 && h1?.isPrimary === true, h1);
+
+    const replaced = await recruiter.put(skillsUrl, { skills: [
+      { skillId: s2.skill_id, proficiency: 'ADVANCED', years: 2 },
+      { skillId: s3.skill_id, proficiency: 'INTERMEDIATE' },
+    ] });
+    check('the list can be replaced', replaced.status === 200, replaced.body);
+    held = await heldNow();
+    check('a skill left out of the new list is removed',
+      !held.some((s: any) => s.skillId === s1.skill_id) && held.length === 2, held.map((s: any) => s.name));
+    check('a skill kept has its new proficiency',
+      held.find((s: any) => s.skillId === s2.skill_id)?.proficiency === 'ADVANCED');
+
+    // A refused list must leave the old one exactly as it was.
+    const refusals: Array<[string, any, number]> = [
+      ['a skill listed twice', { skills: [
+        { skillId: s1.skill_id, proficiency: 'BASIC' }, { skillId: s1.skill_id, proficiency: 'EXPERT' }] }, 400],
+      ['a skill that does not exist', { skills: [
+        { skillId: '00000000-0000-4000-8000-000000000000', proficiency: 'BASIC' }] }, 400],
+      ['a proficiency that is not one of the four', { skills: [
+        { skillId: s1.skill_id, proficiency: 'GURU' }] }, 400],
+      ['negative years', { skills: [{ skillId: s1.skill_id, proficiency: 'BASIC', years: -1 }] }, 400],
+      ['years above 60', { skills: [{ skillId: s1.skill_id, proficiency: 'BASIC', years: 61 }] }, 400],
+      ['a last-used year before 1970', { skills: [{ skillId: s1.skill_id, proficiency: 'BASIC', lastUsedYear: 1900 }] }, 400],
+      ['a last-used year in the future', { skills: [
+        { skillId: s1.skill_id, proficiency: 'BASIC', lastUsedYear: new Date().getFullYear() + 1 }] }, 400],
+      ['a last-used year with decimals', { skills: [{ skillId: s1.skill_id, proficiency: 'BASIC', lastUsedYear: 2020.5 }] }, 400],
+      ['an unexpected field', { skills: [{ skillId: s1.skill_id, proficiency: 'BASIC', note: 'x' }] }, 400],
+      ['more than 40 skills', { skills: Array.from({ length: 41 }, (_, i) => (
+        { skillId: `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`, proficiency: 'BASIC' })) }, 400],
+      ['no list at all', {}, 400],
+    ];
+    for (const [label, body, want] of refusals) {
+      const r = await recruiter.put(skillsUrl, body);
+      check(`${label} is refused`, r.status === want, r.status);
+    }
+    const afterRefusals = await heldNow();
+    check('none of the refused lists changed the profile',
+      afterRefusals.length === 2 && afterRefusals.every((s: any) => [s2.skill_id, s3.skill_id].includes(s.skillId)));
+
+    const dup = await recruiter.put(skillsUrl, { skills: [
+      { skillId: s1.skill_id, proficiency: 'BASIC' }, { skillId: s1.skill_id, proficiency: 'EXPERT' }] });
+    check('the duplicate message names the skills field', !!dup.body?.detail?.skills, dup.body);
+
+    // A retired skill: kept by someone who has it, never given to someone else.
+    const retiring = await recruiter.post('/skills', { name: `Retiring skill ${Date.now()}` });
+    const retiringId = retiring.body.skill_id;
+    const withRetiring = await recruiter.put(skillsUrl, { skills: [
+      { skillId: s2.skill_id, proficiency: 'ADVANCED' }, { skillId: retiringId, proficiency: 'BASIC' }] });
+    check('a skill still in use can be assigned', withRetiring.status === 200, withRetiring.body);
+    await recruiter.post(`/skills/${retiringId}/retire`, {});
+    const keepRetired = await recruiter.put(skillsUrl, { skills: [
+      { skillId: s2.skill_id, proficiency: 'EXPERT' }, { skillId: retiringId, proficiency: 'INTERMEDIATE' }] });
+    check('a retired skill the consultant already has can stay', keepRetired.status === 200, keepRetired.body);
+    const other = await recruiter.put(`/consultants/${me.consultantId}/skills`, { skills: [
+      { skillId: retiringId, proficiency: 'BASIC' }] });
+    check('a retired skill cannot be given to someone else', other.status === 400, other.status);
+
+    // Clearing the list is legitimate.
+    const cleared = await recruiter.put(skillsUrl, { skills: [] });
+    check('the list can be cleared', cleared.status === 200 && (await heldNow()).length === 0, cleared.status);
+
+    check('an administrator can maintain skills too',
+      (await admin.put(skillsUrl, { skills: [{ skillId: s1.skill_id, proficiency: 'BASIC' }] })).status === 200);
+    check('a consultant cannot change skills, not even their own',
+      (await consultant.put(`/consultants/${me.consultantId}/skills`, { skills: [] })).status === 403);
+    check('a client manager cannot change skills',
+      (await clientMgr.put(skillsUrl, { skills: [] })).status === 403);
+    check('a consultant that does not exist is a 404',
+      (await recruiter.put('/consultants/00000000-0000-4000-8000-000000000000/skills', { skills: [] })).status === 404);
+    check('a malformed consultant id is refused',
+      (await recruiter.put('/consultants/not-an-id/skills', { skills: [] })).status === 400);
   } finally {
     server.close();
     await closePool();
